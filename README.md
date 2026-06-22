@@ -12,7 +12,7 @@
 ## 安装
 
 ```powershell
-cd C:\Users\LEEDIS\Desktop\codex项目\notion拼多多周报\pdd_weekly_report
+cd D:\desktop\codex\notion拼多多周报\pdd_weekly_report
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -92,7 +92,7 @@ logs/weekly_report_YYYYMMDD.log
 6. 程序或脚本填写虚拟环境里的 Python，例如：
 
 ```text
-C:\Users\LEEDIS\Desktop\codex项目\notion拼多多周报\pdd_weekly_report\.venv\Scripts\python.exe
+D:\desktop\codex\notion拼多多周报\pdd_weekly_report\.venv\Scripts\python.exe
 ```
 
 7. 添加参数填写：
@@ -104,12 +104,12 @@ main.py
 8. 起始于填写：
 
 ```text
-C:\Users\LEEDIS\Desktop\codex项目\notion拼多多周报\pdd_weekly_report
+D:\desktop\codex\notion拼多多周报\pdd_weekly_report
 ```
 
 ## 维护说明
 
-- 脚本会绕开本机代理直连 Notion API（`httpx trust_env=False`），避免本地代理导致 `SSL: UNEXPECTED_EOF_WHILE_READING`。
+- 脚本不会读取系统环境变量里的代理（`httpx trust_env=False`），但会优先使用 `.env` 中的 `NOTION_PROXY`；未配置时会读取 Windows 系统代理。若出现 `SSL: UNEXPECTED_EOF_WHILE_READING` 或 `WinError 10054`，通常需要切换到可访问 Notion 的 Clash 节点，或把 `NOTION_PROXY` 改为可用端口。
 - 源数据库按 `日期` 过滤上周周期。
 - 稳定成本按 `商品ID` 聚合，商品行按本周总花费降序排列。
 - `投产`、`每笔成交花费`、`每笔成交金额` 遇到 0 或空分母时留空，避免 `ZeroDivisionError`。
