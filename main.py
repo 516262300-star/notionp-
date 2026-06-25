@@ -56,7 +56,7 @@ class Stage:
 def setup_logging() -> None:
     log_dir = Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(exist_ok=True)
-    log_file = log_dir / f"weekly_report_{datetime.now(SHANGHAI_TZ).strftime('%Y%m%d')}.log"
+    log_file = log_dir / f"weekly_report_{datetime.now(SHANGHAI_TZ).strftime('%Y%m%d_%H%M%S')}.log"
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",

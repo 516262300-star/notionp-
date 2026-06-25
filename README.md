@@ -79,8 +79,10 @@ python main.py
 日志写入：
 
 ```text
-logs/weekly_report_YYYYMMDD.log
+logs/weekly_report_YYYYMMDD_HHMMSS.log
 ```
+
+每次运行都会写入一个带时间戳的新日志文件，工作台只需要读取 `logs` 目录下最新的 `weekly_report_*.log`，即可判断最近一次运行结果；同一天早些时候的失败日志不会再影响后续成功运行的状态。
 
 日志包含周报周期、重复检查结果、每个店铺源记录数、生成行数等信息。
 
