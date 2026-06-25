@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
-SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+try:
+    SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+except ZoneInfoNotFoundError:
+    # Windows Python may not have an IANA timezone database unless tzdata is installed.
+    # Shanghai has no DST in the report period, so UTC+8 is a safe local fallback.
+    SHANGHAI_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
 
 
 @dataclass(frozen=True)

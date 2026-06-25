@@ -6,7 +6,7 @@
 
 - Python 3.11+
 - Notion Integration Token，并已给相关页面和数据库授权
-- 所有日期计算使用 `Asia/Shanghai`。Windows 通常需要安装 `tzdata`，已写入 `requirements.txt`
+- 所有日期计算使用 `Asia/Shanghai`。Windows 通常需要安装 `tzdata`，已写入 `requirements.txt`；如果运行环境缺少系统时区库或 `tzdata`，脚本会自动退回 UTC+8，避免启动阶段报 `ZoneInfoNotFoundError`
 - Notion API 版本：`2022-06-28`
 
 ## 安装
@@ -117,3 +117,4 @@ D:\desktop\codex\notion拼多多周报\pdd_weekly_report
 - `投产`、`每笔成交花费`、`每笔成交金额` 遇到 0 或空分母时留空，避免 `ZeroDivisionError`。
 - 主图 Relation 查询 `MAIN_IMAGE_DB_ID` 的标题属性 `商品ID`；找不到时会在当周周报「其他问题反馈」下追加缺主图提示。
 - 只有脚本崩溃才会向 `ALERT_PAGE_ID` 追加红色 callout，并用 Notion mention 真实 @ `NOTIFY_USER_ID`。
+- 如果运行面板显示 `No module named 'tzdata'` 或 `No time zone found with key Asia/Shanghai`，优先确认任务计划程序或启动器使用的是 `.venv\Scripts\python.exe`；当前代码也会在缺少 `tzdata` 时退回 UTC+8 继续运行。

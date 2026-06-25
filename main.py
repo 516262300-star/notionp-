@@ -6,13 +6,12 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
 from aggregator import aggregate_pages
 from alert import send_crash_alert
-from date_utils import WeekPeriod, format_cn_date, get_last_week_period
+from date_utils import SHANGHAI_TZ, WeekPeriod, format_cn_date, get_last_week_period
 from notion_client_wrap import WeeklyReportNotionClient
 from page_builder import SHOP_NAMES, initial_page_blocks, trailing_page_blocks, warning_paragraph
 
@@ -57,7 +56,7 @@ class Stage:
 def setup_logging() -> None:
     log_dir = Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(exist_ok=True)
-    log_file = log_dir / f"weekly_report_{datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d')}.log"
+    log_file = log_dir / f"weekly_report_{datetime.now(SHANGHAI_TZ).strftime('%Y%m%d')}.log"
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",

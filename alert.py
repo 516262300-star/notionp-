@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 import traceback
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
+from date_utils import SHANGHAI_TZ
 from notion_client_wrap import WeeklyReportNotionClient
 
 
@@ -20,7 +20,7 @@ def send_crash_alert(
     stage: str,
     exc: BaseException,
 ) -> None:
-    timestamp = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M:%S")
     exc_type = type(exc).__name__
     exc_msg = str(exc)
     traceback_short = "\n".join(traceback_first_lines(exc))
