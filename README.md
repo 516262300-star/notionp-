@@ -113,7 +113,7 @@ D:\desktop\codex\notion拼多多周报\pdd_weekly_report
 
 ## 维护说明
 
-- 脚本不会读取系统环境变量里的代理（`httpx trust_env=False`），但会优先使用 `.env` 中的 `NOTION_PROXY`；未配置时会读取 Windows 系统代理。若出现 `SSL: UNEXPECTED_EOF_WHILE_READING` 或 `WinError 10054`，通常需要切换到可访问 Notion 的 Clash 节点，或把 `NOTION_PROXY` 改为可用端口。
+- Notion 请求采用与拼多多广告同步相同的网络容错：优先使用 Windows `curl.exe`/Schannel 直连，失败后尝试 Python 直连，最后尝试 `.env` 的 `NOTION_PROXY`（未配置时读取 Windows 系统代理）。成功路线会成为后续请求的首选。三条路线都失败时才进入调用重试；若仍出现 `SSL: UNEXPECTED_EOF_WHILE_READING` 或 `WinError 10054`，请检查 `curl.exe`、`api.notion.com` 和 Clash 节点。
 - 源数据库按 `日期` 过滤上周周期。
 - 稳定成本按 `商品ID` 聚合，商品行按本周总花费降序排列。
 - `投产`、`每笔成交花费`、`每笔成交金额` 遇到 0 或空分母时留空，避免 `ZeroDivisionError`。
