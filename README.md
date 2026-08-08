@@ -42,7 +42,7 @@ notepad .env
 - `PARENT_PAGE_ID`：「拼多多2026周报」父页面 ID
 - `MAIN_IMAGE_DB_ID`：「广告链接主图」数据库 ID
 - `SHOP_1_DB_ID` 到 `SHOP_7_DB_ID`：7 个店铺的每日广告数据数据库 ID
-- `NOTIFY_USER_ID`：崩溃告警要 @ 的 Notion 用户 ID
+- `NOTIFY_USER_ID`：崩溃告警要 @ 的 Notion 用户 ID；当前生产接收人应为金博敏
 - `ALERT_PAGE_ID`：收集脚本崩溃告警的 Notion 页面 ID
 
 利德仕系统登录配置：
@@ -295,5 +295,5 @@ Codex 个人工作台中的自动任务名称为 `拼多多完整周报生成`�
 - 稳定成本按 `商品ID` 聚合，商品行按本周总花费降序排列。
 - `投产`、`每笔成交花费`、`每笔成交金额` 遇到 0 或空分母时留空，避免 `ZeroDivisionError`。
 - 主图 Relation 查询 `MAIN_IMAGE_DB_ID` 的标题属性 `商品ID`；找不到时会在当周周报「其他问题反馈」下追加缺主图提示。
-- 只有脚本崩溃才会向 `ALERT_PAGE_ID` 追加红色 callout，并用 Notion mention 真实 @ `NOTIFY_USER_ID`。
+- 只有脚本崩溃才会向 `ALERT_PAGE_ID` 追加红色 callout，并用 Notion mention 真实 @ `NOTIFY_USER_ID`；当前生产配置固定为金博敏，历史告警中的旧 mention 不会自动改写。
 - 如果运行面板显示 `No module named 'tzdata'` 或 `No time zone found with key Asia/Shanghai`，优先确认任务计划程序或启动器使用的是 `.venv\Scripts\python.exe`；当前代码也会在缺少 `tzdata` 时退回 UTC+8 继续运行。
