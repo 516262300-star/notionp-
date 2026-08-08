@@ -10,6 +10,7 @@ from aggregator import ReportRow
 from network import create_http_client
 from page_builder import inline_database_schema, profit_database_schema, text
 from profit_model import ProfitRow
+from store_overview import StoreOverview, overview_from_cells
 
 
 NOTION_VERSION = "2022-06-28"
@@ -115,6 +116,58 @@ class WeeklyReportNotionClient:
                 self.client.blocks.children.append,
                 block_id=block_id,
                 children=blocks[start : start + 100],
+            )
+
+    @staticmethod
+    def _plain_text(items: list[dict[str, Any]]) -> str:
+        return "".join(item.get("plain_text", "") for item in items)
+
+    def _store_overview_rows(self, page_id: str) -> dict[str, tuple[str, list[str]]]:
+        overview_heading_seen = False
+        for block in self.list_child_blocks(page_id):
+            block_type = block.get("type")
+            if block_type in {"heading_1", "heading_2", "heading_3"}:
+                title = self._plain_text(block.get(block_type, {}).get("rich_text", []))
+                if title == "店铺概况汇总":
+                    overview_heading_seen = True
+                    continue
+                if overview_heading_seen:
+                    break
+            if block_type != "table" or not overview_heading_seen:
+                continue
+            rows: dict[str, tuple[str, list[str]]] = {}
+            for row in self.list_child_blocks(block["id"]):
+                if row.get("type") != "table_row":
+                    continue
+                cells = [
+                    self._plain_text(cell)
+                    for cell in row.get("table_row", {}).get("cells", [])
+                ]
+                if cells and cells[0] in {"一店", "二店", "三店", "四店", "五店", "六店", "七店"}:
+                    rows[cells[0]] = (row["id"], cells)
+            if len(rows) != 7:
+                raise RuntimeError(f"店铺概况表应有 7 家店，实际找到 {len(rows)} 家")
+            return rows
+        raise RuntimeError("周报页面缺少‘店铺概况汇总’表格")
+
+    def read_store_overview(self, page_id: str) -> dict[str, StoreOverview]:
+        return {
+            shop_name: overview_from_cells(cells)
+            for shop_name, (_, cells) in self._store_overview_rows(page_id).items()
+        }
+
+    def update_store_overview(self, page_id: str, rows: dict[str, list[str]]) -> None:
+        existing = self._store_overview_rows(page_id)
+        for shop_name, cells in rows.items():
+            if shop_name not in existing:
+                raise RuntimeError(f"店铺概况表缺少 {shop_name}")
+            row_id = existing[shop_name][0]
+            self._call(
+                "blocks.update(store_overview)",
+                self.client.request,
+                path=f"blocks/{row_id}",
+                method="PATCH",
+                body={"table_row": {"cells": [[text(cell)] for cell in cells]}},
             )
 
     def create_report_page(self, parent_page_id: str, title: str, children: list[dict[str, Any]]) -> str:

@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 from date_utils import SHANGHAI_TZ, WeekPeriod
 from erp_session import load_session, save_session
+from store_overview import StoreOverview, decimal_value
 
 
 BASE_URL = "https://ldswj.net"
@@ -32,6 +33,7 @@ TMALL_AD_URL = (
 TAOBAO_AD_URL = (
     f"{BASE_URL}/leedis2/public/admanager?action=ad_tbx_data&platform=26&store=26"
 )
+PDD_OVERVIEW_URL = f"{BASE_URL}/leedis/index.php/alidata/stdview"
 
 
 class ErpError(RuntimeError):
@@ -433,6 +435,55 @@ class ErpClient:
             round(revenue_total, 2),
         )
         return AdTotal(revenue=round(revenue_total, 2), cost=round(cost_total, 2))
+
+    @staticmethod
+    def _overview_value(html: str, target_date: date, candidates: Iterable[str]) -> str | None:
+        for headers, rows in ErpClient._tables([html]):
+            value_index = _first_matching_index(headers, candidates)
+            date_index = _first_matching_index(headers, ("日期",))
+            if value_index is None or date_index is None:
+                continue
+            for row in rows:
+                if max(value_index, date_index) >= len(row):
+                    continue
+                if row[date_index].strip() == target_date.isoformat():
+                    return row[value_index]
+        return None
+
+    def fetch_store_overviews(self, target_date: date) -> list[StoreOverview]:
+        result: list[StoreOverview] = []
+        for shop_index, shop_name in enumerate(PDD_STORE_ALIASES, start=1):
+            response = self._get_authenticated(
+                PDD_OVERVIEW_URL,
+                params={
+                    "platform": "pdddata",
+                    "store": str(shop_index),
+                    "startdate": target_date.isoformat(),
+                    "enddate": target_date.isoformat(),
+                },
+            )
+            values = {
+                "experience_star": self._overview_value(
+                    response.text, target_date, ("综合体验星级",)
+                ),
+                "growth_level": self._overview_value(response.text, target_date, ("成长层级",)),
+                "rating_score": self._overview_value(response.text, target_date, ("店铺评价分",)),
+                "service_score": self._overview_value(
+                    response.text, target_date, ("消费者服务体验分",)
+                ),
+            }
+            if all(value is None for value in values.values()):
+                raise ErpParseError(f"{shop_name}在 {target_date} 没有店铺概况数据")
+            overview = StoreOverview(
+                shop_name=shop_name,
+                experience_star=decimal_value(values["experience_star"] or ""),
+                growth_level=decimal_value(values["growth_level"] or ""),
+                rating_score=decimal_value(values["rating_score"] or "", zero_is_missing=True),
+                service_score=decimal_value(values["service_score"] or ""),
+            )
+            result.append(overview)
+            logging.info("店铺概况读取：%s，日期=%s，数据=%s", shop_name, target_date, overview)
+        return result
 
     @staticmethod
     def _effective_from_summary(

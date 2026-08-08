@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -14,7 +15,7 @@ from dotenv import load_dotenv
 from aggregator import aggregate_pages
 from alert import send_crash_alert
 from date_utils import SHANGHAI_TZ, WeekPeriod, format_cn_date, get_last_week_period, period_from_dates
-from erp_client import ErpError
+from erp_client import ErpClient, ErpError
 from notion_client_wrap import WeeklyReportNotionClient
 from page_builder import (
     SHOP_NAMES,
@@ -25,6 +26,7 @@ from page_builder import (
     warning_paragraph,
 )
 from profit_model import ProfitRow, collect_profit_rows
+from store_overview import StoreOverview, formatted_overview_rows, saturday_in_period
 
 
 @dataclass(frozen=True)
@@ -101,6 +103,57 @@ def find_existing_report_page(
         if start_text in title and end_text in title:
             return block["id"]
     return None
+
+
+def _report_dates_from_title(title: str) -> tuple[date, date] | None:
+    matches = re.findall(r"(20\d{2})年(\d{1,2})月(\d{1,2})日", title)
+    if len(matches) < 2:
+        return None
+    try:
+        start = date(*(int(part) for part in matches[-2]))
+        end = date(*(int(part) for part in matches[-1]))
+    except ValueError:
+        return None
+    return start, end
+
+
+def find_previous_report_page(
+    notion: WeeklyReportNotionClient,
+    parent_page_id: str,
+    period: WeekPeriod,
+) -> str | None:
+    candidates: list[tuple[date, str]] = []
+    for block in notion.list_child_blocks(parent_page_id):
+        if block.get("type") != "child_page":
+            continue
+        title = block.get("child_page", {}).get("title", "")
+        if "测试" in title:
+            continue
+        report_dates = _report_dates_from_title(title)
+        if report_dates and report_dates[1] < period.start_date:
+            candidates.append((report_dates[1], block["id"]))
+    return max(candidates, default=(None, None), key=lambda item: item[0])[1]
+
+
+def collect_store_overview_rows(
+    notion: WeeklyReportNotionClient,
+    config: Config,
+    period: WeekPeriod,
+) -> tuple[date, list[StoreOverview], dict[str, list[str]]]:
+    Stage.value = "获取店铺概况"
+    snapshot_date = saturday_in_period(period)
+    with ErpClient() as erp:
+        current_rows = erp.fetch_store_overviews(snapshot_date)
+
+    previous_page_id = find_previous_report_page(notion, config.parent_page_id, period)
+    previous_rows: dict[str, StoreOverview] = {}
+    if previous_page_id:
+        Stage.value = "读取上一期店铺概况"
+        previous_rows = notion.read_store_overview(previous_page_id)
+        logging.info("上一期店铺概况来源页面：%s", previous_page_id)
+    else:
+        logging.warning("没有找到上一期周报，店铺概况将只填写本期值")
+    return snapshot_date, current_rows, formatted_overview_rows(current_rows, previous_rows)
 
 
 def existing_inline_databases(notion: WeeklyReportNotionClient, page_id: str) -> dict[str, str]:
@@ -224,7 +277,12 @@ def create_profit_database_and_rows(
     return database_id
 
 
-def generate_report(period: WeekPeriod | None = None, *, dry_run: bool = False) -> None:
+def generate_report(
+    period: WeekPeriod | None = None,
+    *,
+    dry_run: bool = False,
+    overview_only: bool = False,
+) -> None:
     setup_logging()
     config = Config.from_env()
     notion = WeeklyReportNotionClient(config.notion_token)
@@ -238,12 +296,42 @@ def generate_report(period: WeekPeriod | None = None, *, dry_run: bool = False) 
     )
 
     try:
+        snapshot_date, _, overview_rows = collect_store_overview_rows(
+            notion, config, period
+        )
+        if overview_only and dry_run:
+            print(
+                json.dumps(
+                    {
+                        "snapshot_date": snapshot_date.isoformat(),
+                        "rows": list(overview_rows.values()),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            logging.info("店铺概况 dry-run 完成，未写入 Notion")
+            return
+
+        if overview_only:
+            page_id = find_existing_report_page(notion, config.parent_page_id, period)
+            if page_id is None:
+                page_id = create_report_skeleton(notion, config, period)
+            Stage.value = "写入店铺概况"
+            notion.update_store_overview(page_id, overview_rows)
+            logging.info("店铺概况写入完成：页面=%s，数据日期=%s", page_id, snapshot_date)
+            return
+
         Stage.value = "汇总盈亏数据"
         profit_rows = collect_profit_rows(notion, config.shop_db_ids, period)
         if dry_run:
             print(
                 json.dumps(
-                    [row.__dict__ for row in profit_rows],
+                    {
+                        "snapshot_date": snapshot_date.isoformat(),
+                        "store_overview": list(overview_rows.values()),
+                        "profit": [row.__dict__ for row in profit_rows],
+                    },
                     ensure_ascii=False,
                     indent=2,
                 )
@@ -267,6 +355,10 @@ def generate_report(period: WeekPeriod | None = None, *, dry_run: bool = False) 
             existing_databases = {}
             heading_titles = set()
             missing_shop_indexes = list(range(7))
+
+        Stage.value = "写入店铺概况"
+        notion.update_store_overview(page_id, overview_rows)
+        logging.info("店铺概况写入完成：数据日期=%s", snapshot_date)
 
         warnings: list[str] = []
         total_source_records = 0
@@ -324,7 +416,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="生成拼多多周报和盈亏数据库")
     parser.add_argument("--start-date", help="开始日期，格式 YYYY-MM-DD")
     parser.add_argument("--end-date", help="结束日期，格式 YYYY-MM-DD")
-    parser.add_argument("--dry-run", action="store_true", help="只汇总并打印盈亏数据，不写入 Notion")
+    parser.add_argument("--dry-run", action="store_true", help="只汇总并打印数据，不写入 Notion")
+    parser.add_argument(
+        "--overview-only",
+        action="store_true",
+        help="只获取上周六店铺概况并回填 Notion，不生成广告和盈亏数据",
+    )
     args = parser.parse_args()
     if bool(args.start_date) != bool(args.end_date):
         parser.error("--start-date 和 --end-date 必须同时提供")
@@ -345,6 +442,10 @@ def period_from_args(args: argparse.Namespace) -> WeekPeriod:
 if __name__ == "__main__":
     try:
         cli_args = parse_args()
-        generate_report(period_from_args(cli_args), dry_run=cli_args.dry_run)
+        generate_report(
+            period_from_args(cli_args),
+            dry_run=cli_args.dry_run,
+            overview_only=cli_args.overview_only,
+        )
     except Exception:
         sys.exit(1)

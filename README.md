@@ -64,6 +64,18 @@ python main.py
 python main.py --start-date 2026-08-01 --end-date 2026-08-07
 ```
 
+只检查店铺概况、不写入 Notion：
+
+```powershell
+python main.py --overview-only --dry-run
+```
+
+只回填店铺概况，不生成广告和盈亏数据：
+
+```powershell
+python main.py --overview-only
+```
+
 只检查和汇总盈亏数据、不写入 Notion：
 
 ```powershell
@@ -131,6 +143,31 @@ python erp_login.py status
 
 如果 `.env` 已填写 `ERP_PHONE` 和 `ERP_PASSWORD`，登录命令可直接写成 `python erp_login.py login`。
 
+## 店铺概况自动回填
+
+“店铺概况汇总”数据来自：
+
+```text
+https://ldswj.net/leedis/index.php/alidata/stdview?platform=pdddata
+```
+
+执行规则：
+
+- 每周一运行时，默认周报周期是上周一到上周日，店铺概况固定读取该周期内的周六数据。
+- 手工指定日期区间时，读取该区间内最靠后的周六；日期区间不包含周六时停止并提示，不写入 Notion。
+- 一店到七店依次读取“综合体验星级”“成长层级”“店铺评价分”“消费者服务体验分”。
+- 上周值从 Notion 中日期早于本期且最接近本期的上一份周报“店铺概况汇总”表读取；本周值来自利德仕系统周六快照。
+- 有变化时写成“上周值 → 本周值 ▲/▼ 变化值”，持平时只写本周值，缺失值写“—”。
+- 店铺评价分的 `0.00` 代表无有效评价数据，按“—”处理；评价分及变化值保留两位小数，服务体验分及变化值保留一位小数。
+- 重复运行同一周期会重新读取网页和上一期周报并覆盖本期七行数据，不会重复创建表格。
+
+推荐先执行只读演练，确认七店数据和对比结果后再写入：
+
+```powershell
+python main.py --overview-only --dry-run
+python main.py --overview-only
+```
+
 ## 盈亏情况数据库
 
 生成器会在周报的 `盈亏情况` 标题下面创建一个内嵌数据库，行顺序为：一店至七店、淘宝、天猫、私域、总计。
@@ -183,7 +220,7 @@ logs/weekly_report_YYYYMMDD_HHMMSS.log
 1. 打开「任务计划程序」。
 2. 选择「创建基本任务」。
 3. 名称填写：`拼多多周报生成`。
-4. 触发器选择「每周」，时间设为每周一 10:00。
+4. 触发器选择「每周」，时间设为每周一 09:00。
 5. 操作选择「启动程序」。
 6. 程序或脚本填写虚拟环境里的 Python，例如：
 
@@ -194,7 +231,7 @@ D:\desktop\codex\notion拼多多周报\pdd_weekly_report\.venv\Scripts\python.ex
 7. 添加参数填写：
 
 ```text
-main.py
+main.py --overview-only
 ```
 
 8. 起始于填写：
@@ -203,10 +240,15 @@ main.py
 D:\desktop\codex\notion拼多多周报\pdd_weekly_report
 ```
 
+当前 Codex 自动化采用相同口径：每周一 09:00（Asia/Shanghai）在本项目运行
+`.venv\Scripts\python.exe main.py --overview-only`。运行失败时保留日志并在任务结果中报告，
+不会把缺失或解析失败的数据写入 Notion。
+
 ## 维护说明
 
 - Notion 请求采用与拼多多广告同步相同的网络容错：优先使用 Windows `curl.exe`/Schannel 直连，失败后尝试 Python 直连，最后尝试 `.env` 的 `NOTION_PROXY`（未配置时读取 Windows 系统代理）。成功路线会成为后续请求的首选。三条路线都失败时才进入调用重试；若仍出现 `SSL: UNEXPECTED_EOF_WHILE_READING` 或 `WinError 10054`，请检查 `curl.exe`、`api.notion.com` 和 Clash 节点。
 - 源数据库按 `日期` 过滤上周周期。
+- 店铺概况源页面按七家店和目标周六逐店查询；任一店四个目标字段全部缺失时停止执行，不写入店铺概况表。
 - 日期可通过桌面生成器或 `--start-date`、`--end-date` 参数选择；命令行不传日期时仍取上一整周。
 - 盈亏数据会在创建 Notion 页面前先完整抓取；网站登录失效或字段解析失败时不会创建半成品周报。
 - 稳定成本按 `商品ID` 聚合，商品行按本周总花费降序排列。
