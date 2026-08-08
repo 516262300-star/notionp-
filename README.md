@@ -1,6 +1,6 @@
 # 拼多多周报本地生成脚本
 
-这个项目用本地 Python 调用 Notion 官方 API，按可选日期生成「拼多多2026周报」页面，在「广告情况」下创建 7 个店铺的内嵌数据库，并在「盈亏情况」下创建利润数据库。
+这个项目用本地 Python 调用 Notion 官方 API，按可选日期生成「拼多多2026周报」页面，自动回填店铺概况和消费者体验分，在「广告情况」下创建 7 个店铺的内嵌数据库，并在「盈亏情况」下创建利润数据库。
 
 ## 环境要求
 
@@ -64,16 +64,22 @@ python main.py
 python main.py --start-date 2026-08-01 --end-date 2026-08-07
 ```
 
-只检查店铺概况、不写入 Notion：
+只检查店铺概况和消费者体验分、不写入 Notion：
 
 ```powershell
 python main.py --overview-only --dry-run
 ```
 
-只回填店铺概况，不生成广告和盈亏数据：
+只回填店铺概况和消费者体验分，不生成广告和盈亏数据：
 
 ```powershell
 python main.py --overview-only
+```
+
+只回填消费者体验分数据库：
+
+```powershell
+python main.py --consumer-only
 ```
 
 只检查和汇总盈亏数据、不写入 Notion：
@@ -143,7 +149,7 @@ python erp_login.py status
 
 如果 `.env` 已填写 `ERP_PHONE` 和 `ERP_PASSWORD`，登录命令可直接写成 `python erp_login.py login`。
 
-## 店铺概况自动回填
+## 店铺概况与消费者体验分自动回填
 
 “店铺概况汇总”数据来自：
 
@@ -161,11 +167,24 @@ https://ldswj.net/leedis/index.php/alidata/stdview?platform=pdddata
 - 店铺评价分的 `0.00` 代表无有效评价数据，按“—”处理；评价分及变化值保留两位小数，服务体验分及变化值保留一位小数。
 - 重复运行同一周期会重新读取网页和上一期周报并覆盖本期七行数据，不会重复创建表格。
 
+“消费者体验分情况”使用同一页面、同一周六口径，并在周报内创建“消费者体验分明细 M.D”内嵌数据库。数据库覆盖一店至七店，字段为：
+
+```text
+店铺 → 消费者服务体验分 → 服务态度体验分 → 基础服务体验分 → 发货服务体验分 → 商品服务体验分 → 物流服务体验分 → 数据日期
+```
+
+- 六项体验分的上周值从上一份 Notion 周报的消费者体验分数据库读取，本周值取网页周六快照。
+- 有变化时写“上周值 → 本周值 ▲/▼ 变化值”，持平只写本周值，缺失写“—”，数值与变化值最多保留一位小数。
+- 如果上一期还没有该数据库，本期只写本周值；从下一期开始自动形成环比。
+- 重复执行会按店铺更新已有七行，不重复建库。旧周报因 Notion API 无法把新数据库插入已有截图块中间，会在页面末尾补“消费者体验分情况（自动生成）”标题后建库；新周报直接在原板块标题下建库。
+
 推荐先执行只读演练，确认七店数据和对比结果后再写入：
 
 ```powershell
 python main.py --overview-only --dry-run
 python main.py --overview-only
+python main.py --consumer-only --dry-run
+python main.py --consumer-only
 ```
 
 ## 盈亏情况数据库
@@ -241,14 +260,14 @@ D:\desktop\codex\notion拼多多周报\pdd_weekly_report
 ```
 
 当前 Codex 自动化采用相同口径：每周一 09:00（Asia/Shanghai）在本项目运行
-`.venv\Scripts\python.exe main.py --overview-only`。运行失败时保留日志并在任务结果中报告，
-不会把缺失或解析失败的数据写入 Notion。
+`.venv\Scripts\python.exe main.py --overview-only`。该命令会同时回填店铺概况和消费者体验分数据库；
+运行失败时保留日志并在任务结果中报告，不会把缺失或解析失败的数据写入 Notion。
 
 ## 维护说明
 
 - Notion 请求采用与拼多多广告同步相同的网络容错：优先使用 Windows `curl.exe`/Schannel 直连，失败后尝试 Python 直连，最后尝试 `.env` 的 `NOTION_PROXY`（未配置时读取 Windows 系统代理）。成功路线会成为后续请求的首选。三条路线都失败时才进入调用重试；若仍出现 `SSL: UNEXPECTED_EOF_WHILE_READING` 或 `WinError 10054`，请检查 `curl.exe`、`api.notion.com` 和 Clash 节点。
 - 源数据库按 `日期` 过滤上周周期。
-- 店铺概况源页面按七家店和目标周六逐店查询；任一店四个目标字段全部缺失时停止执行，不写入店铺概况表。
+- 店铺概况与消费者体验分源页面按七家店和目标周六逐店查询；任一店对应板块字段全部缺失时停止执行，不写入该周报。
 - 日期可通过桌面生成器或 `--start-date`、`--end-date` 参数选择；命令行不传日期时仍取上一整周。
 - 盈亏数据会在创建 Notion 页面前先完整抓取；网站登录失效或字段解析失败时不会创建半成品周报。
 - 稳定成本按 `商品ID` 聚合，商品行按本周总花费降序排列。

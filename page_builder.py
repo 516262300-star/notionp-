@@ -97,16 +97,19 @@ def initial_page_blocks() -> list[dict[str, Any]]:
         store_overview_callout(),
         store_overview_table(),
     ]
-    for title in [
-        "畅销榜排名",
-        "前十商品（销售情况）",
-        "差评概况",
-        "消费者体验分情况",
-        "消费者补偿明细",
-    ]:
+    for title in ["畅销榜排名", "前十商品（销售情况）", "差评概况", "消费者体验分情况"]:
         blocks.append(heading_2(title))
-        if title == "消费者补偿明细":
-            blocks.extend([paragraph("延迟发货"), paragraph("缺货"), paragraph("虚假发货/虚假轨迹")])
+
+    return blocks
+
+
+def post_consumer_experience_blocks() -> list[dict[str, Any]]:
+    blocks = [
+        heading_2("消费者补偿明细"),
+        paragraph("延迟发货"),
+        paragraph("缺货"),
+        paragraph("虚假发货/虚假轨迹"),
+    ]
 
     for title in ["上新建议", "行业分析", "广告情况"]:
         blocks.append(heading_2(title))
@@ -169,6 +172,20 @@ def profit_database_schema() -> dict[str, Any]:
         "毛利-广告": {"number": {"format": "number"}},
         "有效销售": {"number": {"format": "number"}},
         "发货毛利": {"number": {"format": "number"}},
+        "序号": {"number": {"format": "number"}},
+    }
+
+
+def consumer_experience_database_schema() -> dict[str, Any]:
+    return {
+        "店铺": {"title": {}},
+        "消费者服务体验分": {"rich_text": {}},
+        "服务态度体验分": {"rich_text": {}},
+        "基础服务体验分": {"rich_text": {}},
+        "发货服务体验分": {"rich_text": {}},
+        "商品服务体验分": {"rich_text": {}},
+        "物流服务体验分": {"rich_text": {}},
+        "数据日期": {"date": {}},
         "序号": {"number": {"format": "number"}},
     }
 

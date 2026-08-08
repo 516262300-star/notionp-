@@ -14,6 +14,7 @@ import httpx
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
+from consumer_experience import ConsumerExperience
 from date_utils import SHANGHAI_TZ, WeekPeriod
 from erp_session import load_session, save_session
 from store_overview import StoreOverview, decimal_value
@@ -450,8 +451,12 @@ class ErpClient:
                     return row[value_index]
         return None
 
-    def fetch_store_overviews(self, target_date: date) -> list[StoreOverview]:
-        result: list[StoreOverview] = []
+    def fetch_pdd_store_metrics(
+        self,
+        target_date: date,
+    ) -> tuple[list[StoreOverview], list[ConsumerExperience]]:
+        overview_result: list[StoreOverview] = []
+        experience_result: list[ConsumerExperience] = []
         for shop_index, shop_name in enumerate(PDD_STORE_ALIASES, start=1):
             response = self._get_authenticated(
                 PDD_OVERVIEW_URL,
@@ -462,7 +467,7 @@ class ErpClient:
                     "enddate": target_date.isoformat(),
                 },
             )
-            values = {
+            overview_values = {
                 "experience_star": self._overview_value(
                     response.text, target_date, ("综合体验星级",)
                 ),
@@ -472,18 +477,60 @@ class ErpClient:
                     response.text, target_date, ("消费者服务体验分",)
                 ),
             }
-            if all(value is None for value in values.values()):
+            if all(value is None for value in overview_values.values()):
                 raise ErpParseError(f"{shop_name}在 {target_date} 没有店铺概况数据")
             overview = StoreOverview(
                 shop_name=shop_name,
-                experience_star=decimal_value(values["experience_star"] or ""),
-                growth_level=decimal_value(values["growth_level"] or ""),
-                rating_score=decimal_value(values["rating_score"] or "", zero_is_missing=True),
-                service_score=decimal_value(values["service_score"] or ""),
+                experience_star=decimal_value(overview_values["experience_star"] or ""),
+                growth_level=decimal_value(overview_values["growth_level"] or ""),
+                rating_score=decimal_value(
+                    overview_values["rating_score"] or "", zero_is_missing=True
+                ),
+                service_score=decimal_value(overview_values["service_score"] or ""),
             )
-            result.append(overview)
+            consumer_values = {
+                "overall_score": self._overview_value(
+                    response.text, target_date, ("消费者服务体验分",)
+                ),
+                "attitude_score": self._overview_value(
+                    response.text, target_date, ("服务态度体验分",)
+                ),
+                "basic_score": self._overview_value(
+                    response.text, target_date, ("基础服务体验分",)
+                ),
+                "shipping_score": self._overview_value(
+                    response.text, target_date, ("发货服务体验分",)
+                ),
+                "product_score": self._overview_value(
+                    response.text, target_date, ("商品服务体验分",)
+                ),
+                "logistics_score": self._overview_value(
+                    response.text, target_date, ("物流服务体验分",)
+                ),
+            }
+            if all(value is None for value in consumer_values.values()):
+                raise ErpParseError(f"{shop_name}在 {target_date} 没有消费者体验分数据")
+            experience = ConsumerExperience(
+                shop_name=shop_name,
+                **{
+                    field: decimal_value(value or "")
+                    for field, value in consumer_values.items()
+                },
+            )
+            overview_result.append(overview)
+            experience_result.append(experience)
             logging.info("店铺概况读取：%s，日期=%s，数据=%s", shop_name, target_date, overview)
-        return result
+            logging.info(
+                "消费者体验分读取：%s，日期=%s，数据=%s",
+                shop_name,
+                target_date,
+                experience,
+            )
+        return overview_result, experience_result
+
+    def fetch_store_overviews(self, target_date: date) -> list[StoreOverview]:
+        overviews, _ = self.fetch_pdd_store_metrics(target_date)
+        return overviews
 
     @staticmethod
     def _effective_from_summary(

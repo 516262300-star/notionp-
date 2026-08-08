@@ -14,6 +14,10 @@ from dotenv import load_dotenv
 
 from aggregator import aggregate_pages
 from alert import send_crash_alert
+from consumer_experience import (
+    ConsumerExperience,
+    formatted_consumer_experience_rows,
+)
 from date_utils import SHANGHAI_TZ, WeekPeriod, format_cn_date, get_last_week_period, period_from_dates
 from erp_client import ErpClient, ErpError
 from notion_client_wrap import WeeklyReportNotionClient
@@ -21,6 +25,7 @@ from page_builder import (
     SHOP_NAMES,
     heading_2,
     initial_page_blocks,
+    post_consumer_experience_blocks,
     post_profit_blocks,
     profit_section_blocks,
     warning_paragraph,
@@ -135,25 +140,62 @@ def find_previous_report_page(
     return max(candidates, default=(None, None), key=lambda item: item[0])[1]
 
 
-def collect_store_overview_rows(
+def _consumer_experience_database_id(databases: dict[str, str]) -> str | None:
+    return next(
+        (
+            database_id
+            for title, database_id in databases.items()
+            if title.startswith("消费者体验分明细")
+        ),
+        None,
+    )
+
+
+def collect_store_metric_rows(
     notion: WeeklyReportNotionClient,
     config: Config,
     period: WeekPeriod,
-) -> tuple[date, list[StoreOverview], dict[str, list[str]]]:
-    Stage.value = "获取店铺概况"
+) -> tuple[
+    date,
+    list[StoreOverview],
+    dict[str, list[str]],
+    list[ConsumerExperience],
+    dict[str, dict[str, str]],
+]:
+    Stage.value = "获取店铺概况和消费者体验分"
     snapshot_date = saturday_in_period(period)
     with ErpClient() as erp:
-        current_rows = erp.fetch_store_overviews(snapshot_date)
+        current_overviews, current_experiences = erp.fetch_pdd_store_metrics(snapshot_date)
 
     previous_page_id = find_previous_report_page(notion, config.parent_page_id, period)
-    previous_rows: dict[str, StoreOverview] = {}
+    previous_overviews: dict[str, StoreOverview] = {}
+    previous_experiences: dict[str, ConsumerExperience] = {}
     if previous_page_id:
         Stage.value = "读取上一期店铺概况"
-        previous_rows = notion.read_store_overview(previous_page_id)
+        previous_overviews = notion.read_store_overview(previous_page_id)
         logging.info("上一期店铺概况来源页面：%s", previous_page_id)
+        previous_databases = existing_inline_databases(notion, previous_page_id)
+        previous_experience_db_id = _consumer_experience_database_id(previous_databases)
+        if previous_experience_db_id:
+            Stage.value = "读取上一期消费者体验分"
+            previous_experiences = notion.read_consumer_experiences(
+                previous_experience_db_id
+            )
+            logging.info("上一期消费者体验分来源数据库：%s", previous_experience_db_id)
+        else:
+            logging.warning("上一期周报没有消费者体验分数据库，本期将只填写本周值")
     else:
         logging.warning("没有找到上一期周报，店铺概况将只填写本期值")
-    return snapshot_date, current_rows, formatted_overview_rows(current_rows, previous_rows)
+        logging.warning("没有找到上一期周报，消费者体验分将只填写本期值")
+    return (
+        snapshot_date,
+        current_overviews,
+        formatted_overview_rows(current_overviews, previous_overviews),
+        current_experiences,
+        formatted_consumer_experience_rows(
+            current_experiences, previous_experiences
+        ),
+    )
 
 
 def existing_inline_databases(notion: WeeklyReportNotionClient, page_id: str) -> dict[str, str]:
@@ -196,6 +238,37 @@ def create_report_skeleton(notion: WeeklyReportNotionClient, config: Config, per
     page_id = notion.create_report_page(config.parent_page_id, period.title, initial_page_blocks())
     logging.info("已创建周报页面：%s", page_id)
     return page_id
+
+
+def consumer_experience_database_title(snapshot_date: date) -> str:
+    return f"消费者体验分明细 {snapshot_date.month}.{snapshot_date.day}"
+
+
+def sync_consumer_experience_database(
+    notion: WeeklyReportNotionClient,
+    page_id: str,
+    snapshot_date: date,
+    rows: dict[str, dict[str, str]],
+    existing_databases: dict[str, str],
+    *,
+    page_created_now: bool,
+) -> str:
+    database_id = _consumer_experience_database_id(existing_databases)
+    if database_id is None:
+        if not page_created_now:
+            notion.append_blocks(page_id, [heading_2("消费者体验分情况（自动生成）")])
+        database_id = notion.create_consumer_experience_database(
+            page_id, consumer_experience_database_title(snapshot_date)
+        )
+    Stage.value = "写入消费者体验分情况"
+    notion.sync_consumer_experience_rows(database_id, rows, snapshot_date)
+    logging.info(
+        "消费者体验分情况写入完成：页面=%s，数据日期=%s，数据库=%s",
+        page_id,
+        snapshot_date,
+        database_id,
+    )
+    return database_id
 
 
 def create_shop_database_and_rows(
@@ -282,6 +355,7 @@ def generate_report(
     *,
     dry_run: bool = False,
     overview_only: bool = False,
+    consumer_only: bool = False,
 ) -> None:
     setup_logging()
     config = Config.from_env()
@@ -296,30 +370,44 @@ def generate_report(
     )
 
     try:
-        snapshot_date, _, overview_rows = collect_store_overview_rows(
+        snapshot_date, _, overview_rows, _, consumer_rows = collect_store_metric_rows(
             notion, config, period
         )
-        if overview_only and dry_run:
+        if (overview_only or consumer_only) and dry_run:
+            payload: dict[str, object] = {"snapshot_date": snapshot_date.isoformat()}
+            if overview_only:
+                payload["store_overview"] = list(overview_rows.values())
+            payload["consumer_experience"] = list(consumer_rows.values())
             print(
                 json.dumps(
-                    {
-                        "snapshot_date": snapshot_date.isoformat(),
-                        "rows": list(overview_rows.values()),
-                    },
+                    payload,
                     ensure_ascii=False,
                     indent=2,
                 )
             )
-            logging.info("店铺概况 dry-run 完成，未写入 Notion")
+            logging.info("店铺指标 dry-run 完成，未写入 Notion")
             return
 
-        if overview_only:
+        if overview_only or consumer_only:
             page_id = find_existing_report_page(notion, config.parent_page_id, period)
+            page_created_now = page_id is None
             if page_id is None:
                 page_id = create_report_skeleton(notion, config, period)
-            Stage.value = "写入店铺概况"
-            notion.update_store_overview(page_id, overview_rows)
-            logging.info("店铺概况写入完成：页面=%s，数据日期=%s", page_id, snapshot_date)
+            if overview_only:
+                Stage.value = "写入店铺概况"
+                notion.update_store_overview(page_id, overview_rows)
+                logging.info(
+                    "店铺概况写入完成：页面=%s，数据日期=%s", page_id, snapshot_date
+                )
+            existing_databases = existing_inline_databases(notion, page_id)
+            sync_consumer_experience_database(
+                notion,
+                page_id,
+                snapshot_date,
+                consumer_rows,
+                existing_databases,
+                page_created_now=page_created_now,
+            )
             return
 
         Stage.value = "汇总盈亏数据"
@@ -330,6 +418,7 @@ def generate_report(
                     {
                         "snapshot_date": snapshot_date.isoformat(),
                         "store_overview": list(overview_rows.values()),
+                        "consumer_experience": list(consumer_rows.values()),
                         "profit": [row.__dict__ for row in profit_rows],
                     },
                     ensure_ascii=False,
@@ -359,6 +448,22 @@ def generate_report(
         Stage.value = "写入店铺概况"
         notion.update_store_overview(page_id, overview_rows)
         logging.info("店铺概况写入完成：数据日期=%s", snapshot_date)
+
+        consumer_database_id = sync_consumer_experience_database(
+            notion,
+            page_id,
+            snapshot_date,
+            consumer_rows,
+            existing_databases,
+            page_created_now=created_page,
+        )
+        existing_databases[consumer_experience_database_title(snapshot_date)] = (
+            consumer_database_id
+        )
+
+        if created_page or "广告情况" not in heading_titles:
+            Stage.value = "追加消费者体验分后续板块"
+            notion.append_blocks(page_id, post_consumer_experience_blocks())
 
         warnings: list[str] = []
         total_source_records = 0
@@ -420,9 +525,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--overview-only",
         action="store_true",
-        help="只获取上周六店铺概况并回填 Notion，不生成广告和盈亏数据",
+        help="只获取上周六店铺概况和消费者体验分并回填 Notion，不生成广告和盈亏数据",
+    )
+    parser.add_argument(
+        "--consumer-only",
+        action="store_true",
+        help="只获取上周六消费者体验分并回填 Notion",
     )
     args = parser.parse_args()
+    if args.overview_only and args.consumer_only:
+        parser.error("--overview-only 和 --consumer-only 不能同时使用")
     if bool(args.start_date) != bool(args.end_date):
         parser.error("--start-date 和 --end-date 必须同时提供")
     return args
@@ -446,6 +558,7 @@ if __name__ == "__main__":
             period_from_args(cli_args),
             dry_run=cli_args.dry_run,
             overview_only=cli_args.overview_only,
+            consumer_only=cli_args.consumer_only,
         )
     except Exception:
         sys.exit(1)

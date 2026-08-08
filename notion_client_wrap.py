@@ -2,13 +2,24 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import date
 from typing import Any, Callable
 
 from notion_client import Client
 
 from aggregator import ReportRow
+from consumer_experience import (
+    CONSUMER_EXPERIENCE_FIELDS,
+    ConsumerExperience,
+    consumer_experience_from_values,
+)
 from network import create_http_client
-from page_builder import inline_database_schema, profit_database_schema, text
+from page_builder import (
+    consumer_experience_database_schema,
+    inline_database_schema,
+    profit_database_schema,
+    text,
+)
 from profit_model import ProfitRow
 from store_overview import StoreOverview, overview_from_cells
 
@@ -63,6 +74,28 @@ PROFIT_VIEW_PROPERTY_WIDTHS = {
     "毛利-广告": 130,
     "有效销售": 130,
     "发货毛利": 120,
+    "序号": 80,
+}
+CONSUMER_EXPERIENCE_VIEW_PROPERTY_ORDER = [
+    "店铺",
+    "消费者服务体验分",
+    "服务态度体验分",
+    "基础服务体验分",
+    "发货服务体验分",
+    "商品服务体验分",
+    "物流服务体验分",
+    "数据日期",
+    "序号",
+]
+CONSUMER_EXPERIENCE_VIEW_PROPERTY_WIDTHS = {
+    "店铺": 100,
+    "消费者服务体验分": 180,
+    "服务态度体验分": 170,
+    "基础服务体验分": 170,
+    "发货服务体验分": 170,
+    "商品服务体验分": 170,
+    "物流服务体验分": 170,
+    "数据日期": 120,
     "序号": 80,
 }
 
@@ -232,6 +265,32 @@ class WeeklyReportNotionClient:
         self.configure_profit_view_order(database_id)
         return database_id
 
+    def create_consumer_experience_database(self, parent_page_id: str, title: str) -> str:
+        response = self._call(
+            "databases.create(consumer_experience)",
+            self.client.request,
+            path="databases",
+            method="POST",
+            body={
+                "parent": {"type": "page_id", "page_id": parent_page_id},
+                "is_inline": True,
+                "title": [text(title)],
+                "properties": consumer_experience_database_schema(),
+            },
+        )
+        database_id = response["id"]
+        self.configure_consumer_experience_view_order(database_id)
+        return database_id
+
+    def configure_consumer_experience_view_order(self, database_id: str) -> None:
+        self._configure_view_order(
+            database_id,
+            CONSUMER_EXPERIENCE_VIEW_PROPERTY_ORDER,
+            CONSUMER_EXPERIENCE_VIEW_PROPERTY_WIDTHS,
+            hidden={"序号"},
+            sorts=[{"property": "序号", "direction": "ascending"}],
+        )
+
     def configure_profit_view_order(self, database_id: str) -> None:
         self._configure_view_order(
             database_id,
@@ -247,6 +306,7 @@ class WeeklyReportNotionClient:
         property_widths: dict[str, int],
         *,
         hidden: set[str] | None = None,
+        sorts: list[dict[str, str]] | None = None,
     ) -> None:
         hidden = hidden or set()
         views = self._call(
@@ -283,7 +343,10 @@ class WeeklyReportNotionClient:
                 self.view_client.request,
                 path=f"views/{view_id}",
                 method="PATCH",
-                body={"configuration": {"type": "table", "properties": ordered}},
+                body={
+                    "configuration": {"type": "table", "properties": ordered},
+                    **({"sorts": sorts} if sorts is not None else {}),
+                },
             )
 
     def query_database_all(self, database_id: str, filter_obj: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -391,3 +454,74 @@ class WeeklyReportNotionClient:
                 )
             else:
                 self.create_profit_row(database_id, row)
+
+    @staticmethod
+    def _database_property_text(page: dict[str, Any], property_name: str) -> str:
+        prop = page.get("properties", {}).get(property_name, {})
+        items = prop.get("title") or prop.get("rich_text") or []
+        return "".join(item.get("plain_text", "") for item in items)
+
+    def read_consumer_experiences(
+        self,
+        database_id: str,
+    ) -> dict[str, ConsumerExperience]:
+        result: dict[str, ConsumerExperience] = {}
+        for page in self.query_database_all(database_id):
+            shop_name = self._database_property_text(page, "店铺")
+            if not shop_name:
+                continue
+            values = {
+                property_name: self._database_property_text(page, property_name)
+                for property_name in CONSUMER_EXPERIENCE_FIELDS.values()
+            }
+            result[shop_name] = consumer_experience_from_values(shop_name, values)
+        return result
+
+    @staticmethod
+    def _consumer_experience_properties(
+        shop_name: str,
+        values: dict[str, str],
+        snapshot_date: date,
+        seq: int,
+    ) -> dict[str, Any]:
+        return {
+            "店铺": {"title": [text(shop_name)]},
+            **{
+                property_name: {"rich_text": [text(values[property_name])]}
+                for property_name in CONSUMER_EXPERIENCE_FIELDS.values()
+            },
+            "数据日期": {"date": {"start": snapshot_date.isoformat()}},
+            "序号": {"number": seq},
+        }
+
+    def sync_consumer_experience_rows(
+        self,
+        database_id: str,
+        rows: dict[str, dict[str, str]],
+        snapshot_date: date,
+    ) -> None:
+        existing_by_shop = {
+            self._database_property_text(page, "店铺"): page["id"]
+            for page in self.query_database_all(database_id)
+            if self._database_property_text(page, "店铺")
+        }
+        for seq, (shop_name, values) in enumerate(rows.items(), start=1):
+            properties = self._consumer_experience_properties(
+                shop_name, values, snapshot_date, seq
+            )
+            page_id = existing_by_shop.get(shop_name)
+            if page_id:
+                self._call(
+                    "pages.update(consumer_experience_row)",
+                    self.client.pages.update,
+                    page_id=page_id,
+                    properties=properties,
+                )
+            else:
+                self._call(
+                    "pages.create(consumer_experience_row)",
+                    self.client.pages.create,
+                    parent={"type": "database_id", "database_id": database_id},
+                    properties=properties,
+                )
+        self.configure_consumer_experience_view_order(database_id)

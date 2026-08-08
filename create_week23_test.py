@@ -5,7 +5,11 @@ from datetime import datetime
 from date_utils import SHANGHAI_TZ, format_cn_date, get_last_week_period
 from main import Config, append_feedback, create_shop_database_and_rows, setup_logging
 from notion_client_wrap import WeeklyReportNotionClient
-from page_builder import initial_page_blocks, trailing_page_blocks
+from page_builder import (
+    initial_page_blocks,
+    post_consumer_experience_blocks,
+    trailing_page_blocks,
+)
 
 
 def main() -> None:
@@ -20,6 +24,8 @@ def main() -> None:
 
     page_id = notion.create_report_page(config.parent_page_id, title, initial_page_blocks())
     print(f"TEST_PAGE_ID={page_id}")
+
+    notion.append_blocks(page_id, post_consumer_experience_blocks())
 
     warnings: list[str] = []
     total_source_records = 0
