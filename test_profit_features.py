@@ -2,28 +2,58 @@ from __future__ import annotations
 
 import unittest
 from datetime import date, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 
 from date_utils import SHANGHAI_TZ, period_from_dates
 from erp_client import AdTotal, EffectiveTotal, ErpClient, ErpParseError, TMALL_AD_URL
+from main import _report_week_from_title, find_existing_report_page, find_previous_report_page
 from page_builder import profit_database_schema
 from profit_model import _profit_row
 
 
 class ProfitFeatureTests(unittest.TestCase):
-    def test_custom_period_title_does_not_claim_iso_week(self) -> None:
+    def test_custom_period_title_uses_end_date_iso_week(self) -> None:
         period = period_from_dates(date(2026, 8, 1), date(2026, 8, 7))
-        self.assertEqual(period.title, "2026时间：2026年8月1日到2026年8月7日")
+        self.assertEqual(period.title, "周报｜拼多多｜2026-W32｜金博敏")
+        self.assertEqual(period.iso_week, 32)
 
-    def test_full_monday_to_sunday_keeps_week_title(self) -> None:
+    def test_full_monday_to_sunday_uses_standard_title(self) -> None:
         period = period_from_dates(date(2026, 8, 3), date(2026, 8, 9))
-        self.assertIn("第三十二周", period.title)
+        self.assertEqual(period.title, "周报｜拼多多｜2026-W32｜金博敏")
 
     def test_cross_year_iso_week_uses_iso_year(self) -> None:
         period = period_from_dates(date(2025, 12, 29), date(2026, 1, 4))
-        self.assertTrue(period.title.startswith("2026时间：第一周"))
+        self.assertEqual(period.title, "周报｜拼多多｜2026-W01｜金博敏")
+
+    def test_report_week_parser_accepts_only_standard_title(self) -> None:
+        self.assertEqual(_report_week_from_title("周报｜拼多多｜2026-W32｜金博敏"), (2026, 32))
+        self.assertIsNone(_report_week_from_title("周报｜拼多多｜2026-W54｜金博敏"))
+
+    def test_existing_report_matches_standard_week_title(self) -> None:
+        notion = Mock()
+        notion.list_child_blocks.return_value = [
+            {
+                "id": "w32-page",
+                "type": "child_page",
+                "child_page": {"title": "周报｜拼多多｜2026-W32｜金博敏"},
+            }
+        ]
+        period = period_from_dates(date(2026, 8, 1), date(2026, 8, 7))
+        self.assertEqual(find_existing_report_page(notion, "parent", period), "w32-page")
+
+    def test_previous_report_uses_prior_iso_week(self) -> None:
+        notion = Mock()
+        notion.list_child_blocks.return_value = [
+            {
+                "id": "w31-page",
+                "type": "child_page",
+                "child_page": {"title": "周报｜拼多多｜2026-W31｜金博敏"},
+            }
+        ]
+        period = period_from_dates(date(2026, 8, 3), date(2026, 8, 9))
+        self.assertEqual(find_previous_report_page(notion, "parent", period), "w31-page")
 
     def test_profit_formulas_match_template_rules(self) -> None:
         row = _profit_row(

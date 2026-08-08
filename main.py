@@ -19,7 +19,7 @@ from consumer_experience import (
     ConsumerExperience,
     formatted_consumer_experience_rows,
 )
-from date_utils import SHANGHAI_TZ, WeekPeriod, format_cn_date, get_last_week_period, period_from_dates
+from date_utils import SHANGHAI_TZ, WeekPeriod, get_last_week_period, period_from_dates
 from erp_client import ErpClient, ErpError
 from notion_client_wrap import WeeklyReportNotionClient
 from page_builder import (
@@ -137,17 +137,27 @@ def find_existing_report_page(
     period: WeekPeriod,
 ) -> str | None:
     Stage.value = "检查重复周报"
-    start_text = format_cn_date(period.start_date)
-    end_text = format_cn_date(period.end_date)
     for block in notion.list_child_blocks(parent_page_id):
         if block.get("type") != "child_page":
             continue
         title = block.get("child_page", {}).get("title", "")
         if "测试" in title:
             continue
-        if start_text in title and end_text in title:
+        if title == period.title:
             return block["id"]
     return None
+
+
+def _report_week_from_title(title: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"周报｜拼多多｜(20\d{2})-W(\d{2})｜金博敏", title)
+    if not match:
+        return None
+    iso_year, iso_week = (int(part) for part in match.groups())
+    try:
+        date.fromisocalendar(iso_year, iso_week, 1)
+    except ValueError:
+        return None
+    return iso_year, iso_week
 
 
 def _report_dates_from_title(title: str) -> tuple[date, date] | None:
@@ -173,6 +183,12 @@ def find_previous_report_page(
             continue
         title = block.get("child_page", {}).get("title", "")
         if "测试" in title:
+            continue
+        report_week = _report_week_from_title(title)
+        if report_week:
+            week_end = date.fromisocalendar(*report_week, 7)
+            if week_end < period.start_date:
+                candidates.append((week_end, block["id"]))
             continue
         report_dates = _report_dates_from_title(title)
         if report_dates and report_dates[1] < period.start_date:

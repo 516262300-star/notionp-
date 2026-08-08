@@ -48,16 +48,10 @@ def period_from_dates(start: date, end: date) -> WeekPeriod:
     """创建可用于周报或月度汇总的自定义日期周期。"""
     if end < start:
         raise ValueError("结束日期不能早于开始日期")
-    iso = start.isocalendar()
+    # 自定义区间可能跨 ISO 周，标题统一归入截止日所在周。
+    iso = end.isocalendar()
     chinese_week = int_to_chinese_week(iso.week)
-    is_full_iso_week = start.weekday() == 0 and (end - start).days == 6
-    if is_full_iso_week:
-        title = (
-            f"{iso.year}时间：第{chinese_week}周"
-            f"{format_cn_date(start)}到{format_cn_date(end)}"
-        )
-    else:
-        title = f"{end.year}时间：{format_cn_date(start)}到{format_cn_date(end)}"
+    title = f"周报｜拼多多｜{iso.year}-W{iso.week:02d}｜金博敏"
 
     return WeekPeriod(
         start_date=start,
