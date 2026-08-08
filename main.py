@@ -19,7 +19,13 @@ from consumer_experience import (
     ConsumerExperience,
     formatted_consumer_experience_rows,
 )
-from date_utils import SHANGHAI_TZ, WeekPeriod, get_last_week_period, period_from_dates
+from date_utils import (
+    SHANGHAI_TZ,
+    WeekPeriod,
+    get_last_week_period,
+    get_month_to_yesterday_period,
+    period_from_dates,
+)
 from erp_client import ErpClient, ErpError
 from notion_client_wrap import WeeklyReportNotionClient
 from page_builder import (
@@ -596,9 +602,11 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def period_from_args(args: argparse.Namespace) -> WeekPeriod:
+def period_from_args(args: argparse.Namespace, now: datetime | None = None) -> WeekPeriod:
     if not args.start_date:
-        return get_last_week_period()
+        if args.overview_only or args.consumer_only:
+            return get_last_week_period(now)
+        return get_month_to_yesterday_period(now)
     try:
         start = date.fromisoformat(args.start_date)
         end = date.fromisoformat(args.end_date)

@@ -72,3 +72,11 @@ def get_last_week_period(now: datetime | None = None) -> WeekPeriod:
     start = this_monday - timedelta(days=7)
     end = start + timedelta(days=6)
     return period_from_dates(start, end)
+
+
+def get_month_to_yesterday_period(now: datetime | None = None) -> WeekPeriod:
+    """按 Asia/Shanghai 计算截止昨天的单月区间，月初自动归入上月。"""
+    current = now.astimezone(SHANGHAI_TZ) if now else datetime.now(SHANGHAI_TZ)
+    end = current.date() - timedelta(days=1)
+    start = end.replace(day=1)
+    return period_from_dates(start, end)

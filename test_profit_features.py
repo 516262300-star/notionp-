@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import unittest
 from datetime import date, datetime, timedelta
 from unittest.mock import Mock, patch
@@ -8,12 +9,46 @@ import httpx
 
 from date_utils import SHANGHAI_TZ, period_from_dates
 from erp_client import AdTotal, EffectiveTotal, ErpClient, ErpParseError, TMALL_AD_URL
-from main import _report_week_from_title, find_existing_report_page, find_previous_report_page
+from main import _report_week_from_title, find_existing_report_page, find_previous_report_page, period_from_args
 from page_builder import profit_database_schema
 from profit_model import _profit_row
 
 
 class ProfitFeatureTests(unittest.TestCase):
+    def test_full_report_without_dates_uses_month_to_yesterday(self) -> None:
+        args = argparse.Namespace(
+            start_date=None,
+            end_date=None,
+            overview_only=False,
+            consumer_only=False,
+        )
+        period = period_from_args(args, datetime(2026, 8, 8, 9, 0, tzinfo=SHANGHAI_TZ))
+        self.assertEqual(period.start_date, date(2026, 8, 1))
+        self.assertEqual(period.end_date, date(2026, 8, 7))
+        self.assertEqual(period.title, "周报｜拼多多｜2026-W32｜金博敏")
+
+    def test_full_report_without_dates_uses_previous_month_on_month_start(self) -> None:
+        args = argparse.Namespace(
+            start_date=None,
+            end_date=None,
+            overview_only=False,
+            consumer_only=False,
+        )
+        period = period_from_args(args, datetime(2026, 9, 1, 9, 0, tzinfo=SHANGHAI_TZ))
+        self.assertEqual(period.start_date, date(2026, 8, 1))
+        self.assertEqual(period.end_date, date(2026, 8, 31))
+
+    def test_overview_only_without_dates_keeps_last_full_week(self) -> None:
+        args = argparse.Namespace(
+            start_date=None,
+            end_date=None,
+            overview_only=True,
+            consumer_only=False,
+        )
+        period = period_from_args(args, datetime(2026, 8, 8, 9, 0, tzinfo=SHANGHAI_TZ))
+        self.assertEqual(period.start_date, date(2026, 7, 27))
+        self.assertEqual(period.end_date, date(2026, 8, 2))
+
     def test_custom_period_title_uses_end_date_iso_week(self) -> None:
         period = period_from_dates(date(2026, 8, 1), date(2026, 8, 7))
         self.assertEqual(period.title, "周报｜拼多多｜2026-W32｜金博敏")
