@@ -6,7 +6,7 @@ import os
 import re
 from calendar import monthrange
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
 
@@ -666,10 +666,14 @@ class ErpClient:
 
         today = datetime.now(SHANGHAI_TZ).date()
         month_last_day = monthrange(period.start_date.year, period.start_date.month)[1]
+        current_month_cutoffs = {today}
+        yesterday = today - timedelta(days=1)
+        if (yesterday.year, yesterday.month) == (today.year, today.month):
+            current_month_cutoffs.add(yesterday)
         is_current_month_to_date = (
             (period.start_date.year, period.start_date.month) == (today.year, today.month)
             and period.start_date.day == 1
-            and period.end_date == today
+            and period.end_date in current_month_cutoffs
         )
         is_closed_full_month = (
             period.start_date.day == 1
@@ -680,7 +684,7 @@ class ErpClient:
             current_hint = date(today.year, today.month, 1)
             raise ErpParseError(
                 "有效销售-业务线汇总只有月份筛选，无法精确生成所选日期区间。"
-                f"当前可用的月累计区间是 {current_hint} 到 {today}；"
+                f"当前可用的月累计区间是 {current_hint} 到昨天或今天；"
                 "历史月份必须选择该月1日到月末。"
             )
         return period.start_date.strftime("%Y-%m")

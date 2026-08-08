@@ -129,13 +129,23 @@ class ProfitFeatureTests(unittest.TestCase):
 
     def test_business_summary_rejects_partial_month_period(self) -> None:
         today = datetime.now(SHANGHAI_TZ).date()
-        if today.day > 1:
-            period = period_from_dates(today.replace(day=1), today - timedelta(days=1))
+        if today.day > 2:
+            period = period_from_dates(today.replace(day=1), today - timedelta(days=2))
         else:
             previous_month_end = today - timedelta(days=1)
             period = period_from_dates(previous_month_end.replace(day=2), previous_month_end)
         with self.assertRaises(ErpParseError):
             ErpClient._business_summary_month(period)
+
+    def test_business_summary_accepts_previous_day_operational_cutoff(self) -> None:
+        today = datetime.now(SHANGHAI_TZ).date()
+        if today.day == 1:
+            self.skipTest("每月 1 日没有同月的上一日")
+        period = period_from_dates(today.replace(day=1), today - timedelta(days=1))
+        self.assertEqual(
+            ErpClient._business_summary_month(period),
+            today.strftime("%Y-%m"),
+        )
 
     def test_business_summary_maps_pdd_tmall_taobao_and_private(self) -> None:
         today = datetime.now(SHANGHAI_TZ).date()
