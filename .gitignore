@@ -1,5 +1,6 @@
 .env
 .erp_session.bin
+.weekly_report.lock
 logs/
 __pycache__/
 *.py[cod]

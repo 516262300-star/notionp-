@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -65,6 +66,45 @@ class Config:
             notify_user_id=os.environ["NOTIFY_USER_ID"],
             alert_page_id=os.environ["ALERT_PAGE_ID"],
         )
+
+
+@contextmanager
+def single_instance_lock(lock_path: Path | None = None):
+    """避免两个生成进程同时向同一份 Notion 周报写入重复数据库。"""
+    path = lock_path or Path(__file__).with_name(".weekly_report.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeError("已有一个拼多多周报生成任务正在运行，请等待完成后再试") from exc
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 class Stage:
@@ -554,11 +594,12 @@ def period_from_args(args: argparse.Namespace) -> WeekPeriod:
 if __name__ == "__main__":
     try:
         cli_args = parse_args()
-        generate_report(
-            period_from_args(cli_args),
-            dry_run=cli_args.dry_run,
-            overview_only=cli_args.overview_only,
-            consumer_only=cli_args.consumer_only,
-        )
+        with single_instance_lock():
+            generate_report(
+                period_from_args(cli_args),
+                dry_run=cli_args.dry_run,
+                overview_only=cli_args.overview_only,
+                consumer_only=cli_args.consumer_only,
+            )
     except Exception:
         sys.exit(1)
