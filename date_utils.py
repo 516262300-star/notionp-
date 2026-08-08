@@ -44,18 +44,21 @@ def format_cn_date(value: date) -> str:
     return f"{value.year}年{value.month}月{value.day}日"
 
 
-def get_last_week_period(now: datetime | None = None) -> WeekPeriod:
-    """按 Asia/Shanghai 计算上周一到上周日，ISO 周用 date.isocalendar。"""
-    current = now.astimezone(SHANGHAI_TZ) if now else datetime.now(SHANGHAI_TZ)
-    this_monday = current.date() - timedelta(days=current.weekday())
-    start = this_monday - timedelta(days=7)
-    end = start + timedelta(days=6)
+def period_from_dates(start: date, end: date) -> WeekPeriod:
+    """创建可用于周报或月度汇总的自定义日期周期。"""
+    if end < start:
+        raise ValueError("结束日期不能早于开始日期")
     iso = start.isocalendar()
     chinese_week = int_to_chinese_week(iso.week)
-    title = (
-        f"{start.year}时间：第{chinese_week}周"
-        f"{format_cn_date(start)}到{format_cn_date(end)}"
-    )
+    is_full_iso_week = start.weekday() == 0 and (end - start).days == 6
+    if is_full_iso_week:
+        title = (
+            f"{iso.year}时间：第{chinese_week}周"
+            f"{format_cn_date(start)}到{format_cn_date(end)}"
+        )
+    else:
+        title = f"{end.year}时间：{format_cn_date(start)}到{format_cn_date(end)}"
+
     return WeekPeriod(
         start_date=start,
         end_date=end,
@@ -66,3 +69,12 @@ def get_last_week_period(now: datetime | None = None) -> WeekPeriod:
         chinese_week=chinese_week,
         title=title,
     )
+
+
+def get_last_week_period(now: datetime | None = None) -> WeekPeriod:
+    """按 Asia/Shanghai 计算上周一到上周日，ISO 周用 date.isocalendar。"""
+    current = now.astimezone(SHANGHAI_TZ) if now else datetime.now(SHANGHAI_TZ)
+    this_monday = current.date() - timedelta(days=current.weekday())
+    start = this_monday - timedelta(days=7)
+    end = start + timedelta(days=6)
+    return period_from_dates(start, end)

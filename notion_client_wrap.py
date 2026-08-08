@@ -8,7 +8,8 @@ from notion_client import Client
 
 from aggregator import ReportRow
 from network import create_http_client
-from page_builder import inline_database_schema, text
+from page_builder import inline_database_schema, profit_database_schema, text
+from profit_model import ProfitRow
 
 
 NOTION_VERSION = "2022-06-28"
@@ -38,6 +39,30 @@ DEFAULT_VIEW_PROPERTY_WIDTHS = {
     "商品ID": 150,
     "主图关联": 180,
     "序号": 90,
+}
+PROFIT_VIEW_PROPERTY_ORDER = [
+    "项目",
+    "广告成交",
+    "广告费",
+    "ROI",
+    "广告占比",
+    "发货净利",
+    "毛利-广告",
+    "有效销售",
+    "发货毛利",
+    "序号",
+]
+PROFIT_VIEW_PROPERTY_WIDTHS = {
+    "项目": 150,
+    "广告成交": 130,
+    "广告费": 120,
+    "ROI": 100,
+    "广告占比": 110,
+    "发货净利": 120,
+    "毛利-广告": 130,
+    "有效销售": 130,
+    "发货毛利": 120,
+    "序号": 80,
 }
 
 
@@ -131,6 +156,46 @@ class WeeklyReportNotionClient:
         return database_id
 
     def configure_default_view_order(self, database_id: str) -> None:
+        self._configure_view_order(
+            database_id,
+            DEFAULT_VIEW_PROPERTY_ORDER,
+            DEFAULT_VIEW_PROPERTY_WIDTHS,
+        )
+
+    def create_profit_database(self, parent_page_id: str, title: str) -> str:
+        response = self._call(
+            "databases.create(profit)",
+            self.client.request,
+            path="databases",
+            method="POST",
+            body={
+                "parent": {"type": "page_id", "page_id": parent_page_id},
+                "is_inline": True,
+                "title": [text(title)],
+                "properties": profit_database_schema(),
+            },
+        )
+        database_id = response["id"]
+        self.configure_profit_view_order(database_id)
+        return database_id
+
+    def configure_profit_view_order(self, database_id: str) -> None:
+        self._configure_view_order(
+            database_id,
+            PROFIT_VIEW_PROPERTY_ORDER,
+            PROFIT_VIEW_PROPERTY_WIDTHS,
+            hidden={"序号"},
+        )
+
+    def _configure_view_order(
+        self,
+        database_id: str,
+        property_order: list[str],
+        property_widths: dict[str, int],
+        *,
+        hidden: set[str] | None = None,
+    ) -> None:
+        hidden = hidden or set()
         views = self._call(
             "views.list",
             self.view_client.request,
@@ -150,13 +215,13 @@ class WeeklyReportNotionClient:
             if configuration.get("type") != "table":
                 continue
             existing_names = [prop.get("property_name") for prop in configuration.get("properties", [])]
-            ordered_names = [name for name in DEFAULT_VIEW_PROPERTY_ORDER if name in existing_names]
-            ordered_names.extend(name for name in existing_names if name not in DEFAULT_VIEW_PROPERTY_ORDER)
+            ordered_names = [name for name in property_order if name in existing_names]
+            ordered_names.extend(name for name in existing_names if name not in property_order)
             ordered = [
                 {
                     "property_id": name,
-                    "visible": True,
-                    "width": DEFAULT_VIEW_PROPERTY_WIDTHS.get(name, 140),
+                    "visible": name not in hidden,
+                    "width": property_widths.get(name, 140),
                 }
                 for name in ordered_names
             ]
@@ -223,6 +288,26 @@ class WeeklyReportNotionClient:
         }
         self._call(
             "pages.create(database_row)",
+            self.client.pages.create,
+            parent={"type": "database_id", "database_id": database_id},
+            properties=properties,
+        )
+
+    def create_profit_row(self, database_id: str, row: ProfitRow) -> None:
+        properties: dict[str, Any] = {
+            "项目": {"title": [text(row.project)]},
+            "广告成交": {"number": row.ad_revenue},
+            "广告费": {"number": row.ad_cost},
+            "ROI": {"number": row.roi},
+            "广告占比": {"number": row.ad_share},
+            "发货净利": {"number": row.shipping_net_profit},
+            "毛利-广告": {"number": row.gross_profit_after_ads},
+            "有效销售": {"number": row.effective_sales},
+            "发货毛利": {"number": row.shipping_gross_profit},
+            "序号": {"number": row.seq},
+        }
+        self._call(
+            "pages.create(profit_row)",
             self.client.pages.create,
             parent={"type": "database_id", "database_id": database_id},
             properties=properties,

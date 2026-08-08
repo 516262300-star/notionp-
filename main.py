@@ -1,19 +1,29 @@
 from __future__ import annotations
 
+import argparse
+import json
 import logging
 import os
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from aggregator import aggregate_pages
 from alert import send_crash_alert
-from date_utils import SHANGHAI_TZ, WeekPeriod, format_cn_date, get_last_week_period
+from date_utils import SHANGHAI_TZ, WeekPeriod, format_cn_date, get_last_week_period, period_from_dates
 from notion_client_wrap import WeeklyReportNotionClient
-from page_builder import SHOP_NAMES, initial_page_blocks, trailing_page_blocks, warning_paragraph
+from page_builder import (
+    SHOP_NAMES,
+    heading_2,
+    initial_page_blocks,
+    post_profit_blocks,
+    profit_section_blocks,
+    warning_paragraph,
+)
+from profit_model import ProfitRow, collect_profit_rows
 
 
 @dataclass(frozen=True)
@@ -79,7 +89,6 @@ def find_existing_report_page(
     period: WeekPeriod,
 ) -> str | None:
     Stage.value = "检查重复周报"
-    week_text = f"第{period.chinese_week}周"
     start_text = format_cn_date(period.start_date)
     end_text = format_cn_date(period.end_date)
     for block in notion.list_child_blocks(parent_page_id):
@@ -88,7 +97,7 @@ def find_existing_report_page(
         title = block.get("child_page", {}).get("title", "")
         if "测试" in title:
             continue
-        if week_text in title and start_text in title and end_text in title:
+        if start_text in title and end_text in title:
             return block["id"]
     return None
 
@@ -155,7 +164,7 @@ def create_shop_database_and_rows(
     inline_db_id = notion.create_inline_database(page_id, shop_name, config.main_image_db_id)
 
     if not pages:
-        warnings.append(f"{shop_name}上周无广告数据")
+        warnings.append(f"{shop_name}所选周期无广告数据")
         logging.info("%s 生成行数：0", shop_name)
         notion.configure_default_view_order(inline_db_id)
         return len(pages), 0, warnings
@@ -190,11 +199,36 @@ def append_feedback(notion: WeeklyReportNotionClient, page_id: str, warnings: li
         notion.append_blocks(page_id, [warning_paragraph(message) for message in warnings])
 
 
-def generate_report() -> None:
+def profit_database_title(period: WeekPeriod) -> str:
+    return (
+        f"盈亏明细 {period.start_date.month}.{period.start_date.day}"
+        f"-{period.end_date.month}.{period.end_date.day}"
+    )
+
+
+def create_profit_database_and_rows(
+    notion: WeeklyReportNotionClient,
+    page_id: str,
+    period: WeekPeriod,
+    rows: list[ProfitRow],
+) -> str:
+    title = profit_database_title(period)
+    Stage.value = "创建盈亏情况数据库"
+    database_id = notion.create_profit_database(page_id, title)
+    Stage.value = "写入盈亏情况"
+    # Notion 新建行默认出现在顶部，倒序写入可让一店到总计从上到下显示。
+    for row in reversed(rows):
+        notion.create_profit_row(database_id, row)
+    notion.configure_profit_view_order(database_id)
+    logging.info("盈亏情况生成完成：%s 行", len(rows))
+    return database_id
+
+
+def generate_report(period: WeekPeriod | None = None, *, dry_run: bool = False) -> None:
     setup_logging()
     config = Config.from_env()
     notion = WeeklyReportNotionClient(config.notion_token)
-    period = get_last_week_period()
+    period = period or get_last_week_period()
     logging.info(
         "周报周期：%s 到 %s，ISO 年=%s，ISO 周=%s",
         period.start_date,
@@ -204,9 +238,23 @@ def generate_report() -> None:
     )
 
     try:
+        Stage.value = "汇总盈亏数据"
+        profit_rows = collect_profit_rows(notion, config.shop_db_ids, period)
+        if dry_run:
+            print(
+                json.dumps(
+                    [row.__dict__ for row in profit_rows],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            logging.info("盈亏数据 dry-run 完成，未写入 Notion")
+            return
+
         page_id = find_existing_report_page(notion, config.parent_page_id, period)
         if page_id:
             logging.info("检测到重复周报，不重新创建页面：%s", page_id)
+            created_page = False
             existing_databases = existing_inline_databases(notion, page_id)
             normalize_existing_inline_database_views(notion, existing_databases)
             heading_titles = existing_heading_titles(notion, page_id)
@@ -215,6 +263,8 @@ def generate_report() -> None:
             ]
         else:
             page_id = create_report_skeleton(notion, config, period)
+            created_page = True
+            existing_databases = {}
             heading_titles = set()
             missing_shop_indexes = list(range(7))
 
@@ -234,11 +284,25 @@ def generate_report() -> None:
             raise RuntimeError("未能获得周报页面 ID")
 
         if total_source_records == 0 and len(missing_shop_indexes) == 7:
-            warnings.append("上周全店无广告数据")
+            warnings.append("所选周期全店无广告数据")
 
-        if "其他问题反馈" not in heading_titles:
+        profit_title = profit_database_title(period)
+        if profit_title in existing_databases:
+            notion.configure_profit_view_order(existing_databases[profit_title])
+            logging.info("盈亏情况数据库已存在，不重复创建：%s", profit_title)
+        else:
+            Stage.value = "追加盈亏情况板块"
+            if created_page or "盈亏情况" not in heading_titles:
+                notion.append_blocks(page_id, profit_section_blocks())
+            else:
+                # 兼容旧版已生成页面：旧页面的盈亏标题后已有其他板块，无法移动旧块，
+                # 因此在页面尾部补一个明确的自动生成标题，避免数据库脱离标题。
+                notion.append_blocks(page_id, [heading_2("盈亏情况（自动生成）")])
+            create_profit_database_and_rows(notion, page_id, period, profit_rows)
+
+        if created_page or "其他问题反馈" not in heading_titles:
             Stage.value = "追加后续周报板块"
-            notion.append_blocks(page_id, trailing_page_blocks())
+            notion.append_blocks(page_id, post_profit_blocks())
 
         append_feedback(notion, page_id, warnings)
         logging.info("周报生成完成：%s", page_id)
@@ -250,8 +314,31 @@ def generate_report() -> None:
         raise
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="生成拼多多周报和盈亏数据库")
+    parser.add_argument("--start-date", help="开始日期，格式 YYYY-MM-DD")
+    parser.add_argument("--end-date", help="结束日期，格式 YYYY-MM-DD")
+    parser.add_argument("--dry-run", action="store_true", help="只汇总并打印盈亏数据，不写入 Notion")
+    args = parser.parse_args()
+    if bool(args.start_date) != bool(args.end_date):
+        parser.error("--start-date 和 --end-date 必须同时提供")
+    return args
+
+
+def period_from_args(args: argparse.Namespace) -> WeekPeriod:
+    if not args.start_date:
+        return get_last_week_period()
+    try:
+        start = date.fromisoformat(args.start_date)
+        end = date.fromisoformat(args.end_date)
+    except ValueError as exc:
+        raise SystemExit(f"日期格式错误：{exc}") from exc
+    return period_from_dates(start, end)
+
+
 if __name__ == "__main__":
     try:
-        generate_report()
+        cli_args = parse_args()
+        generate_report(period_from_args(cli_args), dry_run=cli_args.dry_run)
     except Exception:
         sys.exit(1)

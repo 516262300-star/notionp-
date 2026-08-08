@@ -114,14 +114,16 @@ def initial_page_blocks() -> list[dict[str, Any]]:
 
 
 def trailing_page_blocks() -> list[dict[str, Any]]:
+    return profit_section_blocks() + post_profit_blocks()
+
+
+def profit_section_blocks() -> list[dict[str, Any]]:
+    return [heading_2("业务员情况"), heading_2("盈亏情况")]
+
+
+def post_profit_blocks() -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
-    for title in [
-        "业务员情况",
-        "盈亏情况",
-        "图片、视频进展",
-        "平台规则变化等",
-        "其他问题反馈",
-    ]:
+    for title in ["图片、视频进展", "平台规则变化等", "其他问题反馈"]:
         blocks.append(heading_2(title))
         if title == "其他问题反馈":
             blocks.append(paragraph())
@@ -152,6 +154,21 @@ def inline_database_schema(main_image_db_id: str) -> dict[str, Any]:
                 "single_property": {},
             }
         },
+        "序号": {"number": {"format": "number"}},
+    }
+
+
+def profit_database_schema() -> dict[str, Any]:
+    return {
+        "项目": {"title": {}},
+        "广告成交": {"number": {"format": "number"}},
+        "广告费": {"number": {"format": "number"}},
+        "ROI": {"number": {"format": "number"}},
+        "广告占比": {"number": {"format": "percent"}},
+        "发货净利": {"number": {"format": "number"}},
+        "毛利-广告": {"number": {"format": "number"}},
+        "有效销售": {"number": {"format": "number"}},
+        "发货毛利": {"number": {"format": "number"}},
         "序号": {"number": {"format": "number"}},
     }
 
