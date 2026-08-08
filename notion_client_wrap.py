@@ -294,7 +294,17 @@ class WeeklyReportNotionClient:
         )
 
     def create_profit_row(self, database_id: str, row: ProfitRow) -> None:
-        properties: dict[str, Any] = {
+        properties = self._profit_row_properties(row)
+        self._call(
+            "pages.create(profit_row)",
+            self.client.pages.create,
+            parent={"type": "database_id", "database_id": database_id},
+            properties=properties,
+        )
+
+    @staticmethod
+    def _profit_row_properties(row: ProfitRow) -> dict[str, Any]:
+        return {
             "项目": {"title": [text(row.project)]},
             "广告成交": {"number": row.ad_revenue},
             "广告费": {"number": row.ad_cost},
@@ -306,9 +316,25 @@ class WeeklyReportNotionClient:
             "发货毛利": {"number": row.shipping_gross_profit},
             "序号": {"number": row.seq},
         }
-        self._call(
-            "pages.create(profit_row)",
-            self.client.pages.create,
-            parent={"type": "database_id", "database_id": database_id},
-            properties=properties,
-        )
+
+    def sync_profit_rows(self, database_id: str, rows: list[ProfitRow]) -> None:
+        existing_pages = self.query_database_all(database_id)
+        existing_by_project: dict[str, str] = {}
+        for page in existing_pages:
+            title_items = page.get("properties", {}).get("项目", {}).get("title", [])
+            project = "".join(item.get("plain_text", "") for item in title_items)
+            if project and project not in existing_by_project:
+                existing_by_project[project] = page["id"]
+
+        for row in rows:
+            properties = self._profit_row_properties(row)
+            page_id = existing_by_project.get(row.project)
+            if page_id:
+                self._call(
+                    "pages.update(profit_row)",
+                    self.client.pages.update,
+                    page_id=page_id,
+                    properties=properties,
+                )
+            else:
+                self.create_profit_row(database_id, row)

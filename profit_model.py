@@ -92,6 +92,8 @@ def _profit_row(
 
 
 def collect_profit_rows(notion: Any, shop_db_ids: list[str], period: WeekPeriod) -> list[ProfitRow]:
+    # 先校验业务线汇总是否能准确表示所选日期，避免无效区间先产生大量外部查询。
+    ErpClient._business_summary_month(period)
     pdd_ads = _pdd_ad_totals(notion, shop_db_ids, period)
     with ErpClient() as erp:
         if not erp.check_login():

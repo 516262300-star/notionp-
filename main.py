@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from aggregator import aggregate_pages
 from alert import send_crash_alert
 from date_utils import SHANGHAI_TZ, WeekPeriod, format_cn_date, get_last_week_period, period_from_dates
+from erp_client import ErpError
 from notion_client_wrap import WeeklyReportNotionClient
 from page_builder import (
     SHOP_NAMES,
@@ -216,9 +217,8 @@ def create_profit_database_and_rows(
     Stage.value = "创建盈亏情况数据库"
     database_id = notion.create_profit_database(page_id, title)
     Stage.value = "写入盈亏情况"
-    # Notion 新建行默认出现在顶部，倒序写入可让一店到总计从上到下显示。
-    for row in reversed(rows):
-        notion.create_profit_row(database_id, row)
+    # 新库倒序写入，让 Notion 默认视图中一店到总计从上到下显示。
+    notion.sync_profit_rows(database_id, list(reversed(rows)))
     notion.configure_profit_view_order(database_id)
     logging.info("盈亏情况生成完成：%s 行", len(rows))
     return database_id
@@ -288,8 +288,10 @@ def generate_report(period: WeekPeriod | None = None, *, dry_run: bool = False) 
 
         profit_title = profit_database_title(period)
         if profit_title in existing_databases:
+            Stage.value = "更新盈亏情况数据"
+            notion.sync_profit_rows(existing_databases[profit_title], profit_rows)
             notion.configure_profit_view_order(existing_databases[profit_title])
-            logging.info("盈亏情况数据库已存在，不重复创建：%s", profit_title)
+            logging.info("盈亏情况数据库已存在，已按最新口径更新：%s", profit_title)
         else:
             Stage.value = "追加盈亏情况板块"
             if created_page or "盈亏情况" not in heading_titles:
@@ -306,6 +308,10 @@ def generate_report(period: WeekPeriod | None = None, *, dry_run: bool = False) 
 
         append_feedback(notion, page_id, warnings)
         logging.info("周报生成完成：%s", page_id)
+    except ErpError as exc:
+        # 登录、网页口径与输入日期类错误是可操作提示，不写入崩溃告警页。
+        logging.error("无法生成周报：%s: %s", type(exc).__name__, exc)
+        raise
     except Exception as exc:
         try:
             send_crash_alert(notion, config.alert_page_id, config.notify_user_id, Stage.value, exc)

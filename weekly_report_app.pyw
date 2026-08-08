@@ -13,7 +13,8 @@ from tkinter import messagebox, scrolledtext
 
 from dotenv import load_dotenv
 
-from date_utils import get_last_week_period
+from date_utils import get_last_week_period, period_from_dates
+from erp_client import ErpClient, ErpParseError
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -185,6 +186,11 @@ class WeeklyReportApp(tk.Tk):
             return
         if end < start:
             messagebox.showerror("日期错误", "结束日期不能早于开始日期。")
+            return
+        try:
+            ErpClient._business_summary_month(period_from_dates(start, end))
+        except ErpParseError as exc:
+            messagebox.showerror("盈亏日期口径不支持", str(exc))
             return
         label = "生成正式周报"
         ok = messagebox.askyesno(

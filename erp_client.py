@@ -24,6 +24,8 @@ LOGIN_ACTION_URL = f"{BASE_URL}/leedis/index.php/welcome/loginact"
 SMS_URL = f"{BASE_URL}/leedis/index.php/fileupload/sms"
 EFFECTIVE_URL = f"{BASE_URL}/leedis2/public/effectivemonth"
 EFFECTIVE_DETAIL_DATA_URL = f"{BASE_URL}/leedis2/public/salesamtkb/detail-data"
+EFFECTIVE_MONTHLY_TABLE_URL = f"{EFFECTIVE_URL}/monthlytable"
+EFFECTIVE_BLINE_DETAIL_URL = f"{EFFECTIVE_URL}/blinedetail"
 TMALL_AD_URL = (
     f"{BASE_URL}/leedis2/public/admanager?action=ad_tmall_data&platform=1&store=103"
 )
@@ -603,8 +605,108 @@ class ErpClient:
             for name, values in sums.items()
         }
 
+    @staticmethod
+    def _business_summary_month(period: WeekPeriod) -> str:
+        if (period.start_date.year, period.start_date.month) != (
+            period.end_date.year,
+            period.end_date.month,
+        ):
+            raise ErpParseError("有效销售-业务线汇总只支持选择月份，不能读取跨月区间")
+
+        today = datetime.now(SHANGHAI_TZ).date()
+        month_last_day = monthrange(period.start_date.year, period.start_date.month)[1]
+        is_current_month_to_date = (
+            (period.start_date.year, period.start_date.month) == (today.year, today.month)
+            and period.start_date.day == 1
+            and period.end_date == today
+        )
+        is_closed_full_month = (
+            period.start_date.day == 1
+            and period.end_date.day == month_last_day
+            and period.end_date < today
+        )
+        if not (is_current_month_to_date or is_closed_full_month):
+            current_hint = date(today.year, today.month, 1)
+            raise ErpParseError(
+                "有效销售-业务线汇总只有月份筛选，无法精确生成所选日期区间。"
+                f"当前可用的月累计区间是 {current_hint} 到 {today}；"
+                "历史月份必须选择该月1日到月末。"
+            )
+        return period.start_date.strftime("%Y-%m")
+
+    @staticmethod
+    def _html_rows(response: httpx.Response) -> list[list[str]]:
+        soup = BeautifulSoup(response.text, "html.parser")
+        rows: list[list[str]] = []
+        for tr in soup.find_all("tr"):
+            cells = [cell.get_text(" ", strip=True) for cell in tr.find_all(["th", "td"])]
+            if cells:
+                rows.append(cells)
+        return rows
+
+    @staticmethod
+    def _find_named_row(rows: Iterable[list[str]], aliases: tuple[str, ...]) -> list[str]:
+        for row in rows:
+            if len(row) < 2:
+                continue
+            name = _normal_text(row[1])
+            if all(_normal_text(alias) in name for alias in aliases):
+                return row
+        raise ErpParseError(f"有效销售-业务线汇总缺少项目：{' / '.join(aliases)}")
+
+    @staticmethod
+    def _effective_from_shipping_row(row: list[str]) -> EffectiveTotal:
+        if len(row) < 12:
+            raise ErpParseError(f"业务线汇总店铺行字段不足：{row[1] if len(row) > 1 else '未知项目'}")
+        return EffectiveTotal(
+            effective_sales=_number(row[2]) or 0.0,
+            shipping_gross_profit=_number(row[10]) or 0.0,
+            shipping_net_profit=_number(row[11]) or 0.0,
+        )
+
+    def _business_line_detail_rows(self, business_line_code: str, year_month: str) -> list[list[str]]:
+        response = self._get_authenticated(
+            EFFECTIVE_BLINE_DETAIL_URL,
+            params={"bl": business_line_code, "ym": year_month},
+        )
+        return self._html_rows(response)
+
+    def _effective_from_business_line_summary(self, period: WeekPeriod) -> dict[str, EffectiveTotal]:
+        year_month = self._business_summary_month(period)
+        summary_response = self._get_authenticated(
+            EFFECTIVE_MONTHLY_TABLE_URL,
+            params={"by": "bl", "headless": "1", "ym": year_month},
+        )
+        summary_rows = self._html_rows(summary_response)
+        pdd_rows = self._business_line_detail_rows("3", year_month)
+        tmall_rows = self._business_line_detail_rows("2", year_month)
+
+        result = {
+            name: self._effective_from_shipping_row(self._find_named_row(pdd_rows, aliases))
+            for name, aliases in PDD_STORE_ALIASES.items()
+        }
+        result["淘宝"] = self._effective_from_shipping_row(
+            self._find_named_row(summary_rows, ("淘宝项目",))
+        )
+        result["天猫"] = self._effective_from_shipping_row(
+            self._find_named_row(tmall_rows, ("3店", "珂琪艺旗舰店"))
+        )
+
+        private_row = self._find_named_row(pdd_rows, ("私域总计",))
+        if len(private_row) < 5:
+            raise ErpParseError("拼多多项目的私域总计字段不足")
+        # 业务线汇总的私域总计没有“发货毛利/发货净利”两列，利润模板沿用
+        # 该行的“毛利/净利”作为私域的发货毛利/发货净利口径。
+        result["私域"] = EffectiveTotal(
+            effective_sales=_number(private_row[2]) or 0.0,
+            shipping_gross_profit=_number(private_row[3]) or 0.0,
+            shipping_net_profit=_number(private_row[4]) or 0.0,
+        )
+        logging.info("有效销售业务线汇总读取完成：月份=%s", year_month)
+        return result
+
     def fetch_effective_totals(self, period: WeekPeriod) -> dict[str, EffectiveTotal]:
-        return self._effective_from_json_rows(self._effective_detail_rows(period))
+        return self._effective_from_business_line_summary(period)
 
     def fetch_tmall_ad_total(self, period: WeekPeriod) -> AdTotal:
         return self.fetch_ad_total(TMALL_AD_URL, period)
