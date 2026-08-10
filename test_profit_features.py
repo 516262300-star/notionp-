@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import unittest
 from datetime import date, datetime, timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import httpx
 
@@ -12,11 +12,44 @@ from date_utils import SHANGHAI_TZ, get_profit_period_for_report, period_from_da
 from erp_client import AdTotal, EffectiveTotal, ErpClient, ErpParseError, TMALL_AD_URL
 from main import _report_week_from_title, find_existing_report_page, find_previous_report_page, period_from_args
 from notion_client_wrap import WeeklyReportNotionClient
-from page_builder import profit_database_schema
-from profit_model import _profit_row
+from page_builder import SHOP_NAMES, profit_database_schema
+from profit_model import _profit_row, collect_profit_rows
 
 
 class ProfitFeatureTests(unittest.TestCase):
+    def test_profit_uses_week_for_ads_and_month_for_effective_totals(self) -> None:
+        ad_period = period_from_dates(date(2026, 8, 3), date(2026, 8, 9))
+        effective_period = period_from_dates(date(2026, 8, 1), date(2026, 8, 9))
+        shop_db_ids = [f"shop-{index}" for index in range(1, 8)]
+        ad_totals = {name: AdTotal(0, 0) for name in SHOP_NAMES}
+        effective_totals = {
+            name: EffectiveTotal(0, 0, 0)
+            for name in [*SHOP_NAMES, "淘宝", "天猫", "私域"]
+        }
+
+        erp = MagicMock()
+        erp.check_login.return_value = True
+        erp.fetch_effective_totals.return_value = effective_totals
+        erp.fetch_taobao_ad_total.return_value = AdTotal(0, 0)
+        erp.fetch_tmall_ad_total.return_value = AdTotal(0, 0)
+        with (
+            patch("profit_model._pdd_ad_totals", return_value=ad_totals) as pdd_ads,
+            patch("profit_model.ErpClient") as erp_class,
+        ):
+            erp_class.return_value.__enter__.return_value = erp
+            collect_profit_rows(
+                None,
+                shop_db_ids,
+                effective_period,
+                ad_period=ad_period,
+            )
+
+        erp_class._business_summary_month.assert_called_once_with(effective_period)
+        pdd_ads.assert_called_once_with(None, shop_db_ids, ad_period)
+        erp.fetch_effective_totals.assert_called_once_with(effective_period)
+        erp.fetch_taobao_ad_total.assert_called_once_with(ad_period)
+        erp.fetch_tmall_ad_total.assert_called_once_with(ad_period)
+
     def test_ad_view_is_sorted_with_total_first(self) -> None:
         notion = WeeklyReportNotionClient.__new__(WeeklyReportNotionClient)
         notion._configure_view_order = Mock()
@@ -71,6 +104,17 @@ class ProfitFeatureTests(unittest.TestCase):
         self.assertEqual(period.start_date, date(2026, 8, 3))
         self.assertEqual(period.end_date, date(2026, 8, 9))
         self.assertEqual(period.title, "周报｜拼多多｜2026-W32｜金博敏")
+
+    def test_legacy_workbench_month_dates_are_mapped_back_to_last_week(self) -> None:
+        args = argparse.Namespace(
+            start_date="2026-08-01",
+            end_date="2026-08-09",
+            overview_only=False,
+            consumer_only=False,
+        )
+        period = period_from_args(args, datetime(2026, 8, 10, 9, 0, tzinfo=SHANGHAI_TZ))
+        self.assertEqual(period.start_date, date(2026, 8, 3))
+        self.assertEqual(period.end_date, date(2026, 8, 9))
 
     def test_weekly_report_uses_month_to_date_profit_period(self) -> None:
         report_period = period_from_dates(date(2026, 8, 3), date(2026, 8, 9))

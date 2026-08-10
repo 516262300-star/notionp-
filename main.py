@@ -8,7 +8,7 @@ import re
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -438,7 +438,7 @@ def generate_report(
         period.iso_week,
     )
     logging.info(
-        "盈亏周期：%s 到 %s",
+        "有效销售及发货利润周期：%s 到 %s（广告仍使用周报周期）",
         profit_period.start_date,
         profit_period.end_date,
     )
@@ -485,7 +485,12 @@ def generate_report(
             return
 
         Stage.value = "汇总盈亏数据"
-        profit_rows = collect_profit_rows(notion, config.shop_db_ids, profit_period)
+        profit_rows = collect_profit_rows(
+            notion,
+            config.shop_db_ids,
+            profit_period,
+            ad_period=period,
+        )
         if dry_run:
             print(
                 json.dumps(
@@ -625,6 +630,17 @@ def period_from_args(args: argparse.Namespace, now: datetime | None = None) -> W
         end = date.fromisoformat(args.end_date)
     except ValueError as exc:
         raise SystemExit(f"日期格式错误：{exc}") from exc
+    current = now.astimezone(SHANGHAI_TZ) if now else datetime.now(SHANGHAI_TZ)
+    is_legacy_workbench_period = (
+        not args.overview_only
+        and not args.consumer_only
+        and current.weekday() == 0
+        and end == current.date() - timedelta(days=1)
+        and start == end.replace(day=1)
+    )
+    if is_legacy_workbench_period:
+        # 兼容旧版个人工作台仍显式传入“月初到昨天”的命令；周报和所有广告必须回到上一整周。
+        return get_last_week_period(current)
     return period_from_dates(start, end)
 
 
