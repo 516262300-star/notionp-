@@ -246,6 +246,7 @@ class WeeklyReportNotionClient:
             database_id,
             DEFAULT_VIEW_PROPERTY_ORDER,
             DEFAULT_VIEW_PROPERTY_WIDTHS,
+            sorts=[{"property": "序号", "direction": "ascending"}],
         )
 
     def create_profit_database(self, parent_page_id: str, title: str) -> str:

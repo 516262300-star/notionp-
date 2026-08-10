@@ -17,6 +17,17 @@ from profit_model import _profit_row
 
 
 class ProfitFeatureTests(unittest.TestCase):
+    def test_ad_view_is_sorted_with_total_first(self) -> None:
+        notion = WeeklyReportNotionClient.__new__(WeeklyReportNotionClient)
+        notion._configure_view_order = Mock()
+
+        notion.configure_default_view_order("database-id")
+
+        self.assertEqual(
+            notion._configure_view_order.call_args.kwargs["sorts"],
+            [{"property": "序号", "direction": "ascending"}],
+        )
+
     def test_summary_sync_updates_current_rows_and_archives_old_week_rows(self) -> None:
         notion = WeeklyReportNotionClient.__new__(WeeklyReportNotionClient)
         notion.client = Mock()
