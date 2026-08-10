@@ -384,13 +384,12 @@ class WeeklyReportNotionClient:
         results = response.get("results", [])
         return results[0]["id"] if results else None
 
-    def create_summary_row(
-        self,
-        database_id: str,
+    @staticmethod
+    def _summary_row_properties(
         row: ReportRow,
-        relation_page_id: str | None = None,
-    ) -> None:
-        properties: dict[str, Any] = {
+        relation_page_id: str | None,
+    ) -> dict[str, Any]:
+        return {
             "计划类型": {"title": [text(row.plan_type)]},
             "商品ID": {"rich_text": [text(row.product_id or "")] if row.product_id else []},
             "序号": {"number": row.seq},
@@ -402,12 +401,71 @@ class WeeklyReportNotionClient:
             "每笔成交金额": {"number": row.revenue_per_order},
             "主图关联": {"relation": [{"id": relation_page_id}] if relation_page_id else []},
         }
+
+    def create_summary_row(
+        self,
+        database_id: str,
+        row: ReportRow,
+        relation_page_id: str | None = None,
+    ) -> None:
+        properties = self._summary_row_properties(row, relation_page_id)
         self._call(
             "pages.create(database_row)",
             self.client.pages.create,
             parent={"type": "database_id", "database_id": database_id},
             properties=properties,
         )
+
+    def sync_summary_rows(
+        self,
+        database_id: str,
+        rows: list[tuple[ReportRow, str | None]],
+    ) -> None:
+        """按计划类型和商品 ID 更新广告汇总行，并归档已不属于本周的旧行。"""
+        existing_by_key: dict[tuple[str, str], str] = {}
+        stale_page_ids: list[str] = []
+        for page in self.query_database_all(database_id):
+            key = (
+                self._database_property_text(page, "计划类型"),
+                self._database_property_text(page, "商品ID"),
+            )
+            if key in existing_by_key:
+                stale_page_ids.append(page["id"])
+            else:
+                existing_by_key[key] = page["id"]
+
+        active_page_ids: set[str] = set()
+        for row, relation_page_id in rows:
+            key = (row.plan_type, row.product_id or "")
+            properties = self._summary_row_properties(row, relation_page_id)
+            page_id = existing_by_key.get(key)
+            if page_id:
+                self._call(
+                    "pages.update(summary_row)",
+                    self.client.pages.update,
+                    page_id=page_id,
+                    properties=properties,
+                )
+                active_page_ids.add(page_id)
+            else:
+                response = self._call(
+                    "pages.create(summary_row)",
+                    self.client.pages.create,
+                    parent={"type": "database_id", "database_id": database_id},
+                    properties=properties,
+                )
+                active_page_ids.add(response["id"])
+
+        stale_page_ids.extend(
+            page_id for page_id in existing_by_key.values() if page_id not in active_page_ids
+        )
+        for page_id in stale_page_ids:
+            self._call(
+                "pages.archive(summary_row)",
+                self.client.pages.update,
+                page_id=page_id,
+                archived=True,
+            )
 
     def create_profit_row(self, database_id: str, row: ProfitRow) -> None:
         properties = self._profit_row_properties(row)

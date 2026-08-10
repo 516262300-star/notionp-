@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -74,9 +75,16 @@ def get_last_week_period(now: datetime | None = None) -> WeekPeriod:
     return period_from_dates(start, end)
 
 
-def get_month_to_yesterday_period(now: datetime | None = None) -> WeekPeriod:
-    """按 Asia/Shanghai 计算截止昨天的单月区间，月初自动归入上月。"""
+def get_profit_period_for_report(
+    report_period: WeekPeriod,
+    now: datetime | None = None,
+) -> WeekPeriod:
+    """把周报周期映射为盈亏页面支持的当月累计或历史整月周期。"""
     current = now.astimezone(SHANGHAI_TZ) if now else datetime.now(SHANGHAI_TZ)
-    end = current.date() - timedelta(days=1)
-    start = end.replace(day=1)
+    report_end = report_period.end_date
+    start = report_end.replace(day=1)
+    if (report_end.year, report_end.month) == (current.year, current.month):
+        end = report_end
+    else:
+        end = report_end.replace(day=monthrange(report_end.year, report_end.month)[1])
     return period_from_dates(start, end)

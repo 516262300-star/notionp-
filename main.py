@@ -13,7 +13,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from aggregator import aggregate_pages
+from aggregator import ReportRow, aggregate_pages
 from alert import send_crash_alert
 from consumer_experience import (
     ConsumerExperience,
@@ -23,7 +23,7 @@ from date_utils import (
     SHANGHAI_TZ,
     WeekPeriod,
     get_last_week_period,
-    get_month_to_yesterday_period,
+    get_profit_period_for_report,
     period_from_dates,
 )
 from erp_client import ErpClient, ErpError
@@ -339,6 +339,7 @@ def create_shop_database_and_rows(
     period: WeekPeriod,
     page_id: str,
     shop_index: int,
+    inline_db_id: str | None = None,
 ) -> tuple[int, int, list[str]]:
     shop_name = SHOP_NAMES[shop_index]
     shop_db_id = config.shop_db_ids[shop_index]
@@ -349,19 +350,23 @@ def create_shop_database_and_rows(
     pages = notion.query_database_all(shop_db_id, weekly_date_filter(period))
     logging.info("%s 源记录数：%s", shop_name, len(pages))
 
-    Stage.value = f"{shop_name} 创建内嵌数据库"
-    inline_db_id = notion.create_inline_database(page_id, shop_name, config.main_image_db_id)
+    if inline_db_id is None:
+        Stage.value = f"{shop_name} 创建内嵌数据库"
+        inline_db_id = notion.create_inline_database(page_id, shop_name, config.main_image_db_id)
+    else:
+        Stage.value = f"{shop_name} 更新内嵌数据库"
 
     if not pages:
         warnings.append(f"{shop_name}所选周期无广告数据")
         logging.info("%s 生成行数：0", shop_name)
+        notion.sync_summary_rows(inline_db_id, [])
         notion.configure_default_view_order(inline_db_id)
         return len(pages), 0, warnings
 
     rows = aggregate_pages(pages)
-    Stage.value = f"{shop_name} 写入汇总行"
-    # Notion 表格默认把新建行放在上方，因此倒序写入后，界面里会按序号 1、2、3... 显示。
-    for row in reversed(rows):
+    Stage.value = f"{shop_name} 同步汇总行"
+    rows_with_relations: list[tuple[ReportRow, str | None]] = []
+    for row in rows:
         relation_page_id = None
         if row.product_id:
             # 只有稳定成本商品行需要主图；找不到时写入当周周报，不触发崩溃告警。
@@ -371,7 +376,8 @@ def create_shop_database_and_rows(
                     f"⚠️ 缺主图：商品ID {row.product_id}（{shop_name}）"
                     "未在广告链接主图中找到，补录后下周自动显示"
                 )
-        notion.create_summary_row(inline_db_id, row, relation_page_id)
+        rows_with_relations.append((row, relation_page_id))
+    notion.sync_summary_rows(inline_db_id, rows_with_relations)
 
     # Notion may reinitialize the default view shortly after database creation.
     # Apply the column order once more after rows exist so the visible table sticks.
@@ -423,12 +429,18 @@ def generate_report(
     config = Config.from_env()
     notion = WeeklyReportNotionClient(config.notion_token)
     period = period or get_last_week_period()
+    profit_period = get_profit_period_for_report(period)
     logging.info(
-        "周报周期：%s 到 %s，ISO 年=%s，ISO 周=%s",
+        "周报及广告周期：%s 到 %s，ISO 年=%s，ISO 周=%s",
         period.start_date,
         period.end_date,
         period.iso_year,
         period.iso_week,
+    )
+    logging.info(
+        "盈亏周期：%s 到 %s",
+        profit_period.start_date,
+        profit_period.end_date,
     )
 
     try:
@@ -473,12 +485,17 @@ def generate_report(
             return
 
         Stage.value = "汇总盈亏数据"
-        profit_rows = collect_profit_rows(notion, config.shop_db_ids, period)
+        profit_rows = collect_profit_rows(notion, config.shop_db_ids, profit_period)
         if dry_run:
             print(
                 json.dumps(
                     {
                         "snapshot_date": snapshot_date.isoformat(),
+                        "report_period": [period.start_date.isoformat(), period.end_date.isoformat()],
+                        "profit_period": [
+                            profit_period.start_date.isoformat(),
+                            profit_period.end_date.isoformat(),
+                        ],
                         "store_overview": list(overview_rows.values()),
                         "consumer_experience": list(consumer_rows.values()),
                         "profit": [row.__dict__ for row in profit_rows],
@@ -497,15 +514,11 @@ def generate_report(
             existing_databases = existing_inline_databases(notion, page_id)
             normalize_existing_inline_database_views(notion, existing_databases)
             heading_titles = existing_heading_titles(notion, page_id)
-            missing_shop_indexes = [
-                index for index, shop_name in enumerate(SHOP_NAMES) if shop_name not in existing_databases
-            ]
         else:
             page_id = create_report_skeleton(notion, config, period)
             created_page = True
             existing_databases = {}
             heading_titles = set()
-            missing_shop_indexes = list(range(7))
 
         Stage.value = "写入店铺概况"
         notion.update_store_overview(page_id, overview_rows)
@@ -529,23 +542,25 @@ def generate_report(
 
         warnings: list[str] = []
         total_source_records = 0
-        if missing_shop_indexes:
-            for shop_index in missing_shop_indexes:
-                source_count, _, shop_warnings = create_shop_database_and_rows(
-                    notion, config, period, page_id, shop_index
-                )
-                total_source_records += source_count
-                warnings.extend(shop_warnings)
-        else:
-            logging.info("7 个内嵌数据库已齐全，无需补建")
+        for shop_index, shop_name in enumerate(SHOP_NAMES):
+            source_count, _, shop_warnings = create_shop_database_and_rows(
+                notion,
+                config,
+                period,
+                page_id,
+                shop_index,
+                existing_databases.get(shop_name),
+            )
+            total_source_records += source_count
+            warnings.extend(shop_warnings)
 
         if not page_id:
             raise RuntimeError("未能获得周报页面 ID")
 
-        if total_source_records == 0 and len(missing_shop_indexes) == 7:
+        if total_source_records == 0:
             warnings.append("所选周期全店无广告数据")
 
-        profit_title = profit_database_title(period)
+        profit_title = profit_database_title(profit_period)
         if profit_title in existing_databases:
             Stage.value = "更新盈亏情况数据"
             notion.sync_profit_rows(existing_databases[profit_title], profit_rows)
@@ -559,7 +574,7 @@ def generate_report(
                 # 兼容旧版已生成页面：旧页面的盈亏标题后已有其他板块，无法移动旧块，
                 # 因此在页面尾部补一个明确的自动生成标题，避免数据库脱离标题。
                 notion.append_blocks(page_id, [heading_2("盈亏情况（自动生成）")])
-            create_profit_database_and_rows(notion, page_id, period, profit_rows)
+            create_profit_database_and_rows(notion, page_id, profit_period, profit_rows)
 
         if created_page or "其他问题反馈" not in heading_titles:
             Stage.value = "追加后续周报板块"
@@ -604,9 +619,7 @@ def parse_args() -> argparse.Namespace:
 
 def period_from_args(args: argparse.Namespace, now: datetime | None = None) -> WeekPeriod:
     if not args.start_date:
-        if args.overview_only or args.consumer_only:
-            return get_last_week_period(now)
-        return get_month_to_yesterday_period(now)
+        return get_last_week_period(now)
     try:
         start = date.fromisoformat(args.start_date)
         end = date.fromisoformat(args.end_date)

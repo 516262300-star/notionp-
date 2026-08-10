@@ -7,36 +7,77 @@ from unittest.mock import Mock, patch
 
 import httpx
 
-from date_utils import SHANGHAI_TZ, period_from_dates
+from aggregator import ReportRow
+from date_utils import SHANGHAI_TZ, get_profit_period_for_report, period_from_dates
 from erp_client import AdTotal, EffectiveTotal, ErpClient, ErpParseError, TMALL_AD_URL
 from main import _report_week_from_title, find_existing_report_page, find_previous_report_page, period_from_args
+from notion_client_wrap import WeeklyReportNotionClient
 from page_builder import profit_database_schema
 from profit_model import _profit_row
 
 
 class ProfitFeatureTests(unittest.TestCase):
-    def test_full_report_without_dates_uses_month_to_yesterday(self) -> None:
+    def test_summary_sync_updates_current_rows_and_archives_old_week_rows(self) -> None:
+        notion = WeeklyReportNotionClient.__new__(WeeklyReportNotionClient)
+        notion.client = Mock()
+        notion.query_database_all = Mock(
+            return_value=[
+                {
+                    "id": "total-row",
+                    "properties": {
+                        "计划类型": {"title": [{"plain_text": "总计"}]},
+                        "商品ID": {"rich_text": []},
+                    },
+                },
+                {
+                    "id": "old-product-row",
+                    "properties": {
+                        "计划类型": {"title": [{"plain_text": "稳定成本"}]},
+                        "商品ID": {"rich_text": [{"plain_text": "OLD"}]},
+                    },
+                },
+            ]
+        )
+        notion._call = Mock()
+        total = ReportRow(1, "总计", None, 100, 200, 2, 10, 10, 20)
+
+        notion.sync_summary_rows("shop-db", [(total, None)])
+
+        update_calls = notion._call.call_args_list
+        self.assertEqual(update_calls[0].args[0], "pages.update(summary_row)")
+        self.assertEqual(update_calls[0].kwargs["page_id"], "total-row")
+        self.assertEqual(update_calls[1].args[0], "pages.archive(summary_row)")
+        self.assertEqual(update_calls[1].kwargs, {"page_id": "old-product-row", "archived": True})
+
+    def test_full_report_without_dates_uses_last_full_week(self) -> None:
         args = argparse.Namespace(
             start_date=None,
             end_date=None,
             overview_only=False,
             consumer_only=False,
         )
-        period = period_from_args(args, datetime(2026, 8, 8, 9, 0, tzinfo=SHANGHAI_TZ))
-        self.assertEqual(period.start_date, date(2026, 8, 1))
-        self.assertEqual(period.end_date, date(2026, 8, 7))
+        period = period_from_args(args, datetime(2026, 8, 10, 9, 0, tzinfo=SHANGHAI_TZ))
+        self.assertEqual(period.start_date, date(2026, 8, 3))
+        self.assertEqual(period.end_date, date(2026, 8, 9))
         self.assertEqual(period.title, "周报｜拼多多｜2026-W32｜金博敏")
 
-    def test_full_report_without_dates_uses_previous_month_on_month_start(self) -> None:
-        args = argparse.Namespace(
-            start_date=None,
-            end_date=None,
-            overview_only=False,
-            consumer_only=False,
+    def test_weekly_report_uses_month_to_date_profit_period(self) -> None:
+        report_period = period_from_dates(date(2026, 8, 3), date(2026, 8, 9))
+        profit_period = get_profit_period_for_report(
+            report_period,
+            datetime(2026, 8, 10, 9, 0, tzinfo=SHANGHAI_TZ),
         )
-        period = period_from_args(args, datetime(2026, 9, 1, 9, 0, tzinfo=SHANGHAI_TZ))
-        self.assertEqual(period.start_date, date(2026, 8, 1))
-        self.assertEqual(period.end_date, date(2026, 8, 31))
+        self.assertEqual(profit_period.start_date, date(2026, 8, 1))
+        self.assertEqual(profit_period.end_date, date(2026, 8, 9))
+
+    def test_week_across_month_start_uses_current_month_profit_period(self) -> None:
+        report_period = period_from_dates(date(2026, 8, 31), date(2026, 9, 6))
+        profit_period = get_profit_period_for_report(
+            report_period,
+            datetime(2026, 9, 7, 9, 0, tzinfo=SHANGHAI_TZ),
+        )
+        self.assertEqual(profit_period.start_date, date(2026, 9, 1))
+        self.assertEqual(profit_period.end_date, date(2026, 9, 6))
 
     def test_overview_only_without_dates_keeps_last_full_week(self) -> None:
         args = argparse.Namespace(
