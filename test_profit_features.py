@@ -17,9 +17,8 @@ from profit_model import _profit_row, collect_profit_rows
 
 
 class ProfitFeatureTests(unittest.TestCase):
-    def test_profit_uses_week_for_ads_and_month_for_effective_totals(self) -> None:
-        ad_period = period_from_dates(date(2026, 8, 3), date(2026, 8, 9))
-        effective_period = period_from_dates(date(2026, 8, 1), date(2026, 8, 9))
+    def test_profit_uses_same_month_period_for_ads_and_profit_metrics(self) -> None:
+        profit_period = period_from_dates(date(2026, 8, 1), date(2026, 8, 9))
         shop_db_ids = [f"shop-{index}" for index in range(1, 8)]
         ad_totals = {name: AdTotal(0, 0) for name in SHOP_NAMES}
         effective_totals = {
@@ -37,18 +36,13 @@ class ProfitFeatureTests(unittest.TestCase):
             patch("profit_model.ErpClient") as erp_class,
         ):
             erp_class.return_value.__enter__.return_value = erp
-            collect_profit_rows(
-                None,
-                shop_db_ids,
-                effective_period,
-                ad_period=ad_period,
-            )
+            collect_profit_rows(None, shop_db_ids, profit_period)
 
-        erp_class._business_summary_month.assert_called_once_with(effective_period)
-        pdd_ads.assert_called_once_with(None, shop_db_ids, ad_period)
-        erp.fetch_effective_totals.assert_called_once_with(effective_period)
-        erp.fetch_taobao_ad_total.assert_called_once_with(ad_period)
-        erp.fetch_tmall_ad_total.assert_called_once_with(ad_period)
+        erp_class._business_summary_month.assert_called_once_with(profit_period)
+        pdd_ads.assert_called_once_with(None, shop_db_ids, profit_period)
+        erp.fetch_effective_totals.assert_called_once_with(profit_period)
+        erp.fetch_taobao_ad_total.assert_called_once_with(profit_period)
+        erp.fetch_tmall_ad_total.assert_called_once_with(profit_period)
 
     def test_ad_view_is_sorted_with_total_first(self) -> None:
         notion = WeeklyReportNotionClient.__new__(WeeklyReportNotionClient)

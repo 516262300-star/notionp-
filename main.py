@@ -438,7 +438,7 @@ def generate_report(
         period.iso_week,
     )
     logging.info(
-        "有效销售及发货利润周期：%s 到 %s（广告仍使用周报周期）",
+        "盈利情况周期：%s 到 %s（含拼多多、淘宝、天猫广告及利润指标）",
         profit_period.start_date,
         profit_period.end_date,
     )
@@ -485,12 +485,7 @@ def generate_report(
             return
 
         Stage.value = "汇总盈亏数据"
-        profit_rows = collect_profit_rows(
-            notion,
-            config.shop_db_ids,
-            profit_period,
-            ad_period=period,
-        )
+        profit_rows = collect_profit_rows(notion, config.shop_db_ids, profit_period)
         if dry_run:
             print(
                 json.dumps(
@@ -639,7 +634,7 @@ def period_from_args(args: argparse.Namespace, now: datetime | None = None) -> W
         and start == end.replace(day=1)
     )
     if is_legacy_workbench_period:
-        # 兼容旧版个人工作台仍显式传入“月初到昨天”的命令；周报和所有广告必须回到上一整周。
+        # 兼容旧版个人工作台仍显式传入“月初到昨天”的命令；周报及“广告情况”必须回到上一整周。
         return get_last_week_period(current)
     return period_from_dates(start, end)
 

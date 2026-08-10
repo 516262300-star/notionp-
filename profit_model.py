@@ -91,25 +91,18 @@ def _profit_row(
     )
 
 
-def collect_profit_rows(
-    notion: Any,
-    shop_db_ids: list[str],
-    effective_period: WeekPeriod,
-    *,
-    ad_period: WeekPeriod | None = None,
-) -> list[ProfitRow]:
-    ad_period = ad_period or effective_period
+def collect_profit_rows(notion: Any, shop_db_ids: list[str], period: WeekPeriod) -> list[ProfitRow]:
     # 先校验业务线汇总是否能准确表示所选日期，避免无效区间先产生大量外部查询。
-    ErpClient._business_summary_month(effective_period)
-    pdd_ads = _pdd_ad_totals(notion, shop_db_ids, ad_period)
+    ErpClient._business_summary_month(period)
+    pdd_ads = _pdd_ad_totals(notion, shop_db_ids, period)
     with ErpClient() as erp:
         if not erp.check_login():
             from erp_client import ErpLoginRequired
 
             raise ErpLoginRequired("系统尚未登录，请先在 .env 填写 ERP_PHONE 和 ERP_PASSWORD")
-        effective = erp.fetch_effective_totals(effective_period)
-        taobao_ad = erp.fetch_taobao_ad_total(ad_period)
-        tmall_ad = erp.fetch_tmall_ad_total(ad_period)
+        effective = erp.fetch_effective_totals(period)
+        taobao_ad = erp.fetch_taobao_ad_total(period)
+        tmall_ad = erp.fetch_tmall_ad_total(period)
 
     rows = [
         _profit_row(index, shop_name, pdd_ads[shop_name], effective[shop_name])
