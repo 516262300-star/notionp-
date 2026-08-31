@@ -352,6 +352,43 @@ class ProfitFeatureTests(unittest.TestCase):
         self.assertEqual(parsed["天猫"].shipping_net_profit, -1)
         self.assertEqual(parsed["私域"].shipping_gross_profit, 30)
 
+    def test_effective_detail_retries_read_timeout_with_extended_timeout(self) -> None:
+        client = ErpClient.__new__(ErpClient)
+        response = httpx.Response(
+            200,
+            request=httpx.Request("GET", "https://example.test/blinedetail"),
+            text="<table><tr><td>一店</td></tr></table>",
+        )
+        with (
+            patch.object(
+                client,
+                "_get_authenticated",
+                side_effect=[httpx.ReadTimeout("月底查询超时"), response],
+            ) as get_authenticated,
+            patch("erp_client.time.sleep") as sleep,
+        ):
+            rows = client._business_line_detail_rows("3", "2026-08")
+
+        self.assertEqual(rows, [["一店"]])
+        self.assertEqual(get_authenticated.call_count, 2)
+        request_timeout = get_authenticated.call_args_list[0].kwargs["timeout"]
+        self.assertEqual(request_timeout.connect, 45)
+        self.assertEqual(request_timeout.read, 120)
+        sleep.assert_called_once_with(2)
+
+    def test_effective_detail_stops_after_two_retries(self) -> None:
+        client = ErpClient.__new__(ErpClient)
+        timeouts = [httpx.ReadTimeout(f"第 {index} 次超时") for index in range(1, 4)]
+        with (
+            patch.object(client, "_get_authenticated", side_effect=timeouts) as get_authenticated,
+            patch("erp_client.time.sleep") as sleep,
+        ):
+            with self.assertRaises(httpx.ReadTimeout):
+                client._business_line_detail_rows("3", "2026-08")
+
+        self.assertEqual(get_authenticated.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 4])
+
     def test_profit_database_columns_match_template(self) -> None:
         self.assertEqual(
             list(profit_database_schema()),

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -35,6 +36,10 @@ TAOBAO_AD_URL = (
     f"{BASE_URL}/leedis2/public/admanager?action=ad_tbx_data&platform=26&store=26"
 )
 PDD_OVERVIEW_URL = f"{BASE_URL}/leedis/index.php/alidata/stdview"
+ERP_REQUEST_TIMEOUT_SECONDS = 45
+EFFECTIVE_DETAIL_READ_TIMEOUT_SECONDS = 120
+EFFECTIVE_DETAIL_MAX_ATTEMPTS = 3
+EFFECTIVE_DETAIL_RETRY_DELAYS_SECONDS = (2, 4)
 
 
 class ErpError(RuntimeError):
@@ -123,7 +128,7 @@ class ErpClient:
         load_dotenv()
         self.client = httpx.Client(
             follow_redirects=True,
-            timeout=45,
+            timeout=ERP_REQUEST_TIMEOUT_SECONDS,
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -767,11 +772,33 @@ class ErpClient:
         )
 
     def _business_line_detail_rows(self, business_line_code: str, year_month: str) -> list[list[str]]:
-        response = self._get_authenticated(
-            EFFECTIVE_BLINE_DETAIL_URL,
-            params={"bl": business_line_code, "ym": year_month},
+        timeout = httpx.Timeout(
+            ERP_REQUEST_TIMEOUT_SECONDS,
+            read=EFFECTIVE_DETAIL_READ_TIMEOUT_SECONDS,
         )
-        return self._html_rows(response)
+        for attempt in range(1, EFFECTIVE_DETAIL_MAX_ATTEMPTS + 1):
+            try:
+                response = self._get_authenticated(
+                    EFFECTIVE_BLINE_DETAIL_URL,
+                    params={"bl": business_line_code, "ym": year_month},
+                    timeout=timeout,
+                )
+                return self._html_rows(response)
+            except httpx.ReadTimeout:
+                if attempt == EFFECTIVE_DETAIL_MAX_ATTEMPTS:
+                    raise
+                delay = EFFECTIVE_DETAIL_RETRY_DELAYS_SECONDS[attempt - 1]
+                logging.warning(
+                    "ERP 有效销售业务线明细读取超时：业务线=%s，月份=%s，"
+                    "第 %s/%s 次尝试，%s 秒后重试",
+                    business_line_code,
+                    year_month,
+                    attempt,
+                    EFFECTIVE_DETAIL_MAX_ATTEMPTS,
+                    delay,
+                )
+                time.sleep(delay)
+        raise AssertionError("有效销售业务线明细重试流程异常")
 
     def _effective_from_business_line_summary(self, period: WeekPeriod) -> dict[str, EffectiveTotal]:
         year_month = self._business_summary_month(period)
