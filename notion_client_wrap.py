@@ -62,6 +62,7 @@ PROFIT_VIEW_PROPERTY_ORDER = [
     "毛利-广告",
     "有效销售",
     "发货毛利",
+    "发货净利率",
     "序号",
 ]
 PROFIT_VIEW_PROPERTY_WIDTHS = {
@@ -74,6 +75,7 @@ PROFIT_VIEW_PROPERTY_WIDTHS = {
     "毛利-广告": 130,
     "有效销售": 130,
     "发货毛利": 120,
+    "发货净利率": 130,
     "序号": 80,
 }
 CONSUMER_EXPERIENCE_VIEW_PROPERTY_ORDER = [
@@ -489,10 +491,21 @@ class WeeklyReportNotionClient:
             "毛利-广告": {"number": row.gross_profit_after_ads},
             "有效销售": {"number": row.effective_sales},
             "发货毛利": {"number": row.shipping_gross_profit},
+            "发货净利率": {"number": row.shipping_net_margin},
             "序号": {"number": row.seq},
         }
 
     def sync_profit_rows(self, database_id: str, rows: list[ProfitRow]) -> None:
+        # 先补齐旧周报数据库的新增字段，再写入行数据；重复执行保持幂等。
+        self._call(
+            "databases.update(profit_schema)",
+            self.client.request,
+            path=f"databases/{database_id}",
+            method="PATCH",
+            body={"properties": {
+                "发货净利率": profit_database_schema()["发货净利率"],
+            }},
+        )
         existing_pages = self.query_database_all(database_id)
         existing_by_project: dict[str, str] = {}
         for page in existing_pages:

@@ -25,6 +25,8 @@ class ProfitFeatureTests(unittest.TestCase):
             name: EffectiveTotal(0, 0, 0)
             for name in [*SHOP_NAMES, "淘宝", "天猫", "私域"]
         }
+        effective_totals["一店"] = EffectiveTotal(100, 50, 20)
+        effective_totals["二店"] = EffectiveTotal(900, 100, 90)
 
         erp = MagicMock()
         erp.check_login.return_value = True
@@ -36,13 +38,15 @@ class ProfitFeatureTests(unittest.TestCase):
             patch("profit_model.ErpClient") as erp_class,
         ):
             erp_class.return_value.__enter__.return_value = erp
-            collect_profit_rows(None, shop_db_ids, profit_period)
+            rows = collect_profit_rows(None, shop_db_ids, profit_period)
 
         erp_class._business_summary_month.assert_called_once_with(profit_period)
         pdd_ads.assert_called_once_with(None, shop_db_ids, profit_period)
         erp.fetch_effective_totals.assert_called_once_with(profit_period)
         erp.fetch_taobao_ad_total.assert_called_once_with(profit_period)
         erp.fetch_tmall_ad_total.assert_called_once_with(profit_period)
+        self.assertEqual(rows[-1].project, "总计")
+        self.assertEqual(rows[-1].shipping_net_margin, 0.11)
 
     def test_ad_view_is_sorted_with_total_first(self) -> None:
         notion = WeeklyReportNotionClient.__new__(WeeklyReportNotionClient)
@@ -194,6 +198,7 @@ class ProfitFeatureTests(unittest.TestCase):
         self.assertEqual(row.roi, 3.96)
         self.assertEqual(row.ad_share, 0.31)
         self.assertEqual(row.gross_profit_after_ads, 14463)
+        self.assertEqual(row.shipping_net_margin, 0.0384)
 
     def test_private_channel_uses_shipping_net_profit(self) -> None:
         row = _profit_row(
@@ -205,6 +210,38 @@ class ProfitFeatureTests(unittest.TestCase):
         )
         self.assertIsNone(row.ad_cost)
         self.assertEqual(row.gross_profit_after_ads, 7700)
+        self.assertEqual(row.shipping_net_margin, 0.1988)
+
+    def test_shipping_net_margin_handles_zero_missing_and_loss(self) -> None:
+        for sales, profit, expected in [
+            (0, 100, None), (None, 100, None), (100, None, None),
+            (100, 0, 0), (1000, -123.45, -0.1235),
+        ]:
+            with self.subTest(sales=sales, profit=profit):
+                row = _profit_row(1, "一店", AdTotal(0, 0), EffectiveTotal(sales, 0, profit))
+                self.assertEqual(row.shipping_net_margin, expected)
+                self.assertEqual(
+                    WeeklyReportNotionClient._profit_row_properties(row)["发货净利率"],
+                    {"number": expected},
+                )
+
+    def test_profit_sync_adds_margin_column_before_updating_existing_rows(self) -> None:
+        notion = WeeklyReportNotionClient.__new__(WeeklyReportNotionClient)
+        notion.client = Mock()
+        notion._call = Mock()
+        notion.query_database_all = Mock(return_value=[{
+            "id": "existing-row",
+            "properties": {"项目": {"title": [{"plain_text": "一店"}]}},
+        }])
+        row = _profit_row(1, "一店", AdTotal(0, 0), EffectiveTotal(1000, 200, 123.45))
+        notion.sync_profit_rows("profit-db", [row])
+        schema_call, row_call = notion._call.call_args_list
+        self.assertEqual(schema_call.kwargs["path"], "databases/profit-db")
+        self.assertEqual(schema_call.kwargs["body"], {
+            "properties": {"发货净利率": {"number": {"format": "percent"}}},
+        })
+        self.assertEqual(row_call.kwargs["page_id"], "existing-row")
+        self.assertEqual(row_call.kwargs["properties"]["发货净利率"], {"number": 0.1235})
 
     def test_effective_summary_parser_matches_store_aliases(self) -> None:
         headers = ["操作", "项目", "有效销售", "发货毛利", "发货净利"]
@@ -402,6 +439,7 @@ class ProfitFeatureTests(unittest.TestCase):
                 "毛利-广告",
                 "有效销售",
                 "发货毛利",
+                "发货净利率",
                 "序号",
             ],
         )

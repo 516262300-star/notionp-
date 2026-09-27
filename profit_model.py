@@ -23,6 +23,13 @@ class ProfitRow:
     effective_sales: float | None
     shipping_gross_profit: float | None
 
+    @property
+    def shipping_net_margin(self) -> float | None:
+        if self.shipping_net_profit is None or self.effective_sales in {None, 0}:
+            return None
+        # Notion 百分比使用小数存储；四位小数对应百分比的两位小数。
+        return round(self.shipping_net_profit / self.effective_sales, 4)
+
 
 def _rounded(value: float | None) -> float | None:
     return None if value is None else round(value, 2)
