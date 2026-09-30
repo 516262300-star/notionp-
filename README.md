@@ -14,7 +14,7 @@ https://app.notion.com/p/3b67db4dc72f811e9f79cc7d4036edba
 
 - Python 3.11+
 - Notion Integration Token，并已给相关页面和数据库授权
-- 可访问利德仕系统的手机号和长期登录密码（网站称“验证码”）。账号密码保存在本机 `.env`，不会提交到 GitHub
+- 已安装并登录 Leedis 桌面客户端；支持工作台接入的版本。
 - 所有日期计算使用 `Asia/Shanghai`。Windows 通常需要安装 `tzdata`，已写入 `requirements.txt`；如果运行环境缺少系统时区库或 `tzdata`，脚本会自动退回 UTC+8，避免启动阶段报 `ZoneInfoNotFoundError`
 - Notion API 版本：`2022-06-28`
 
@@ -45,12 +45,7 @@ notepad .env
 - `NOTIFY_USER_ID`：崩溃告警要 @ 的 Notion 用户 ID；当前生产接收人应为金博敏
 - `ALERT_PAGE_ID`：收集脚本崩溃告警的 Notion 页面 ID
 
-利德仕系统登录配置：
-
-- `ERP_PHONE`：利德仕系统登录手机号。
-- `ERP_PASSWORD`：利德仕系统长期登录密码（网站界面称“验证码”）。
-
-填写以上两项后，桌面生成器会自动带出账号密码；已保存的网站会话过期时，也会自动重新登录。
+ERP 使用 Leedis 客户端登录，配置方法见后文。
 
 ## 本地运行
 
@@ -107,7 +102,7 @@ python main.py --start-date 2026-08-01 --end-date 2026-08-07 --dry-run
 双击后会打开图形界面，可以直接点：
 
 - `上一整周`、`本月至今`、`本月整月`，或手工填写起止日期
-- `获取/重置验证码`、`登录系统`、`检查登录`
+- `客户端登录`、`打开系统`、`检查登录`
 - `测试连接`
 - `生成正式周报`
 - `打开项目文件夹`
@@ -128,34 +123,28 @@ python main.py --start-date 2026-08-01 --end-date 2026-08-07 --dry-run
 
 新建周报的页面结构依次为：本周结论 → 本周问题清单 → 上周遗留问题追踪 → 本次周会需要讨论 → 下周行动清单 → 店铺概况汇总及其余业务板块。生成器按模板结构创建新页面，不依赖复制上一期周报。
 
-## 利德仕系统登录
+## ERP 客户端登录（2026-09-30）
 
-淘宝、天猫和有效销售数据来自利德仕系统。网页登录使用手机号和长期登录密码，网站把该密码称为“验证码”。请在本机 `.env` 填写：
+ERP 统一复用 **Leedis 桌面客户端**。先在客户端完成登录，任务通过客户端“打开系统”取得专用 ERP Chrome 的网页登录态；不再读取 ERP_USERNAME、ERP_PHONE、ERP_PASSWORD，也不回退账号密码或脚本扫码登录。客户端凭据仍由客户端和 Windows 凭据管理器保管。任务只在内存使用 ldswj.net 的网站 Cookie，不再读取旧 `.auth/session.json`、`.erp_session.bin` 或 `states/erp.json`。
 
-```dotenv
-ERP_PHONE=你的手机号
-ERP_PASSWORD=你的登录密码
-```
-
-推荐操作：
-
-1. 打开桌面生成器。
-2. 确认自动带出的手机号和登录密码；如需首次获取或重置，可点 `获取/重置验证码`。
-3. 点 `登录系统`。
-4. 点 `检查登录`，看到“系统登录状态正常”。
-5. 选择日期并生成周报。
-
-登录成功后，网站 Cookie 会保存到本机 `.erp_session.bin`。该文件由 Windows DPAPI 按当前 Windows 用户加密，已加入 `.gitignore`，不能复制到其他电脑或其他 Windows 账号使用。会话过期后，生成周报时会优先使用 `.env` 中的账号密码自动重新登录。
-
-命令行登录方式：
+本机已配置客户端。换电脑时安装 LeedisClient.exe、Google Chrome 和项目 requirements.txt，然后运行工作台仓库的安装命令（替换成实际客户端路径）：
 
 ```powershell
-python erp_login.py send-code --phone 你的手机号
-python erp_login.py login --phone 你的手机号 --password 你的登录密码
-python erp_login.py status
+powershell -ExecutionPolicy Bypass -File tools/setup_erp_client.ps1 -ClientExe "D:\desktop\客户端登录\Leedis-Windows\LeedisClient.exe"
 ```
 
-如果 `.env` 已填写 `ERP_PHONE` 和 `ERP_PASSWORD`，登录命令可直接写成 `python erp_login.py login`。
+配置保存在 `%LOCALAPPDATA%/LeedisDesktop/workbench-config.json`，只记录客户端路径；也可用 `ERP_CLIENT_EXE` 覆盖路径。安装脚本生成客户端需要的 `%USERPROFILE%/Desktop/ERP Chrome.lnk`，使用独立浏览器目录 `%LOCALAPPDATA%/LeedisDesktop/erp-chrome` 和本机 9222 端口。已有配置和快捷方式先备份再更新。网站登录态属于敏感本机数据，不提交到 GitHub。
+
+客户端尚未运行时自动启动并尝试恢复已有登录；未登录、客户端忙、9222 不可用或登录过期无法恢复时，任务失败并显示提示。请在客户端登录后重试原任务；不会自动尝试账号密码，不会关闭客户端或 ERP Chrome。自动任务仍需在已登录 Windows 的同一用户会话下执行。切换客户端账号后，应结束当前任务并重新运行。
+
+```powershell
+python erp_desktop_auth.py login  # 客户端登录，需要授权时由本人完成
+python erp_desktop_auth.py check  # 打开系统并只读检查网页会话
+```
+
+公共接入代码维护源为工作台 `tools/erp_desktop_auth.py`；各业务仓库包含同版副本，可独立运行。更新公共模块时同步四个业务副本。升级无需移植旧网页 Cookie，旧密码配置可自行删除，程序已不再使用。
+
+周报也支持 `python erp_login.py login`、`python erp_login.py open` 和 `python erp_login.py status`。旧 send-code、--phone、--password 命令已移除。
 
 ## 店铺概况与消费者体验分自动回填
 

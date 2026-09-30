@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 from consumer_experience import ConsumerExperience
 from date_utils import SHANGHAI_TZ, WeekPeriod
-from erp_session import load_session, save_session
+from erp_desktop_auth import DesktopLoginRequired, get_client_cookies, is_login_page
 from store_overview import StoreOverview, decimal_value
 
 
@@ -136,14 +136,7 @@ class ErpClient:
                 )
             },
         )
-        payload = load_session() or {}
-        for cookie in payload.get("cookies", []):
-            self.client.cookies.set(
-                cookie["name"],
-                cookie["value"],
-                domain=cookie.get("domain") or "ldswj.net",
-                path=cookie.get("path") or "/",
-            )
+        self._desktop_ready = False
 
     def close(self) -> None:
         self.client.close()
@@ -154,97 +147,42 @@ class ErpClient:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def _save(self) -> None:
-        save_session(
-            {
-                "saved_at": datetime.now(SHANGHAI_TZ).isoformat(),
-                "cookies": _cookie_payload(self.client),
-            }
-        )
+    def _load_desktop(self, *, force: bool = False) -> None:
+        if self._desktop_ready and not force:
+            return
+        try:
+            cookies = get_client_cookies(force=force)
+        except DesktopLoginRequired as exc:
+            raise ErpLoginRequired(str(exc)) from exc
+        self.client.cookies.clear()
+        for cookie in cookies:
+            self.client.cookies.set(cookie["name"], cookie["value"], domain=cookie["domain"], path=cookie.get("path", "/"))
+        self._desktop_ready = True
 
     @staticmethod
     def _is_login_page(response: httpx.Response) -> bool:
-        text = response.text
-        return (
-            "/welcome/loginact" in text
-            or "手机验证 登录" in text
-            or "请输入动态码" in text
-        )
-
-    def send_sms(self, phone: str) -> None:
-        phone = phone.strip()
-        if not re.fullmatch(r"1\d{10}", phone):
-            raise ErpError("手机号格式不正确")
-        response = self.client.post(SMS_URL, data={"phonefromcus": phone})
-        response.raise_for_status()
-        try:
-            result = response.json()
-        except json.JSONDecodeError as exc:
-            raise ErpError("系统没有返回可识别的短信发送结果") from exc
-        if result != 2 and str(result) != "2":
-            if result == 1 or str(result) == "1":
-                raise ErpError("系统提示手机号错误")
-            raise ErpError(f"系统短信发送失败：{result}")
-        self._save()
-
-    @staticmethod
-    def configured_credentials() -> tuple[str, str] | None:
-        phone = os.getenv("ERP_PHONE", "").strip()
-        password = os.getenv("ERP_PASSWORD", "").strip()
-        if phone and password:
-            return phone, password
-        return None
-
-    def login(self, phone: str, password: str) -> None:
-        phone = phone.strip()
-        password = password.strip()
-        if not re.fullmatch(r"1\d{10}", phone):
-            raise ErpError("手机号格式不正确")
-        if not password:
-            raise ErpError("登录密码不能为空")
-        response = self.client.post(LOGIN_ACTION_URL, data={"phone": phone, "password": password})
-        response.raise_for_status()
-        try:
-            result = response.json()
-        except json.JSONDecodeError as exc:
-            raise ErpError("系统没有返回可识别的登录结果") from exc
-        if isinstance(result, dict):
-            result_code = result.get("code")
-            message = result.get("mes") or result.get("message") or "登录失败"
-        else:
-            result_code = result
-            message = str(result)
-        if str(result_code) not in {"0", "2"}:
-            raise ErpError(str(message))
-        check = self.client.get(LOGIN_PAGE_URL)
-        check.raise_for_status()
-        if self._is_login_page(check):
-            raise ErpError("账号或登录密码不正确")
-        self._save()
+        return is_login_page(response.text, str(response.url))
 
     def check_login(self, *, auto_login: bool = True) -> bool:
+        self._load_desktop()
         response = self.client.get(LOGIN_PAGE_URL)
         response.raise_for_status()
-        logged_in = not self._is_login_page(response)
-        if logged_in:
-            self._save()
-        elif auto_login and (credentials := self.configured_credentials()):
-            self.login(*credentials)
-            logged_in = True
-        return logged_in
+        if self._is_login_page(response) and auto_login:
+            self._load_desktop(force=True)
+            response = self.client.get(LOGIN_PAGE_URL)
+            response.raise_for_status()
+        return not self._is_login_page(response)
 
     def _get_authenticated(self, url: str, **kwargs: Any) -> httpx.Response:
+        self._load_desktop()
         response = self.client.get(url, **kwargs)
         response.raise_for_status()
         if self._is_login_page(response):
-            credentials = self.configured_credentials()
-            if credentials:
-                self.login(*credentials)
-                response = self.client.get(url, **kwargs)
-                response.raise_for_status()
+            self._load_desktop(force=True)
+            response = self.client.get(url, **kwargs)
+            response.raise_for_status()
             if self._is_login_page(response):
-                raise ErpLoginRequired("系统登录已过期，请检查 .env 中的 ERP_PHONE 和 ERP_PASSWORD")
-        self._save()
+                raise ErpLoginRequired("系统登录已过期，请在 Leedis 桌面客户端登录后重试。")
         return response
 
     @staticmethod
@@ -305,8 +243,7 @@ class ErpClient:
                 response = self.client.get(action, params=data)
             response.raise_for_status()
             if self._is_login_page(response):
-                raise ErpLoginRequired("系统登录已过期，请检查 .env 中的 ERP_PHONE 和 ERP_PASSWORD")
-            self._save()
+                raise ErpLoginRequired("系统登录已过期，请在 Leedis 桌面客户端登录后重试。")
             return response
 
         logging.warning("网页未发现起止日期表单，将按页面支持的月份参数查询")

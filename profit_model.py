@@ -106,7 +106,7 @@ def collect_profit_rows(notion: Any, shop_db_ids: list[str], period: WeekPeriod)
         if not erp.check_login():
             from erp_client import ErpLoginRequired
 
-            raise ErpLoginRequired("系统尚未登录，请先在 .env 填写 ERP_PHONE 和 ERP_PASSWORD")
+            raise ErpLoginRequired("系统尚未登录，请先在 Leedis 桌面客户端完成登录")
         effective = erp.fetch_effective_totals(period)
         taobao_ad = erp.fetch_taobao_ad_total(period)
         tmall_ad = erp.fetch_tmall_ad_total(period)

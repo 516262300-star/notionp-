@@ -32,8 +32,6 @@ class WeeklyReportApp(tk.Tk):
         default_period = get_last_week_period()
         self.start_date_var = tk.StringVar(value=default_period.start_date.isoformat())
         self.end_date_var = tk.StringVar(value=default_period.end_date.isoformat())
-        self.phone_var = tk.StringVar(value=os.getenv("ERP_PHONE", "").strip())
-        self.password_var = tk.StringVar(value=os.getenv("ERP_PASSWORD", "").strip())
 
         self._build_ui()
         self.after(120, self._drain_output)
@@ -64,22 +62,15 @@ class WeeklyReportApp(tk.Tk):
         tk.Button(period_frame, text="本月至今", command=self._set_month_to_date).grid(row=0, column=6, padx=3)
         tk.Button(period_frame, text="本月整月", command=self._set_full_month).grid(row=0, column=7, padx=3)
 
-        login_frame = tk.LabelFrame(self, text="利德仕系统登录（账号密码来自本机 .env）", padx=10, pady=8)
+        login_frame = tk.LabelFrame(self, text="Leedis 客户端登录", padx=10, pady=8)
         login_frame.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 8))
-        tk.Label(login_frame, text="手机号").grid(row=0, column=0, sticky="w")
-        tk.Entry(login_frame, textvariable=self.phone_var, width=16).grid(row=0, column=1, padx=(6, 12))
-        self.send_code_button = tk.Button(login_frame, text="获取/重置验证码", command=self._send_code)
-        self.send_code_button.grid(row=0, column=2, padx=(0, 12))
-        tk.Label(login_frame, text="登录密码（验证码）").grid(row=0, column=3, sticky="w")
-        tk.Entry(login_frame, textvariable=self.password_var, width=14, show="*").grid(row=0, column=4, padx=(6, 12))
-        self.erp_login_button = tk.Button(login_frame, text="登录系统", command=self._login_erp)
-        self.erp_login_button.grid(row=0, column=5, padx=(0, 8))
-        self.erp_status_button = tk.Button(
-            login_frame,
-            text="检查登录",
-            command=lambda: self._run_script("erp_login.py", "检查系统登录", ["status"]),
-        )
-        self.erp_status_button.grid(row=0, column=6)
+        tk.Label(login_frame, text="复用客户端登录，无需填写 ERP 账号密码").grid(row=0, column=0, padx=(0, 12))
+        self.erp_login_button = tk.Button(login_frame, text="客户端登录", command=self._login_erp)
+        self.erp_login_button.grid(row=0, column=1, padx=8)
+        self.erp_open_button = tk.Button(login_frame, text="打开系统", command=lambda: self._run_script("erp_login.py", "打开系统", ["open"]))
+        self.erp_open_button.grid(row=0, column=2, padx=8)
+        self.erp_status_button = tk.Button(login_frame, text="检查登录", command=lambda: self._run_script("erp_login.py", "检查客户端登录", ["status"]))
+        self.erp_status_button.grid(row=0, column=3)
 
         self.log_box = scrolledtext.ScrolledText(
             self,
@@ -136,31 +127,15 @@ class WeeklyReportApp(tk.Tk):
         self.start_date_var.set(today.replace(day=1).isoformat())
         self.end_date_var.set(today.replace(day=monthrange(today.year, today.month)[1]).isoformat())
 
-    def _send_code(self) -> None:
-        phone = self.phone_var.get().strip()
-        if len(phone) != 11 or not phone.isdigit():
-            messagebox.showerror("手机号错误", "请输入11位手机号。")
-            return
-        self._run_script("erp_login.py", "发送/重置系统验证码", ["send-code", "--phone", phone])
-
     def _login_erp(self) -> None:
-        phone = self.phone_var.get().strip()
-        password = self.password_var.get().strip()
-        if len(phone) != 11 or not phone.isdigit() or not password:
-            messagebox.showerror("登录信息不完整", "请填写11位手机号和长期登录密码（验证码）。")
-            return
-        self._run_script(
-            "erp_login.py",
-            "登录利德仕系统",
-            ["login", "--phone", phone, "--password", password],
-        )
+        self._run_script("erp_login.py", "客户端登录", ["login"])
 
     def _set_running(self, running: bool, label: str = "") -> None:
         self.running = running
         state = tk.DISABLED if running else tk.NORMAL
         self.test_button.config(state=state)
         self.generate_button.config(state=state)
-        self.send_code_button.config(state=state)
+        self.erp_open_button.config(state=state)
         self.erp_login_button.config(state=state)
         self.erp_status_button.config(state=state)
         self.status_var.set(f"{label}中..." if running else "就绪")
