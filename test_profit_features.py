@@ -21,6 +21,8 @@ class ProfitFeatureTests(unittest.TestCase):
         profit_period = period_from_dates(date(2026, 8, 1), date(2026, 8, 9))
         shop_db_ids = [f"shop-{index}" for index in range(1, 8)]
         ad_totals = {name: AdTotal(0, 0) for name in SHOP_NAMES}
+        ad_totals["一店"] = AdTotal(100, 34.56)
+        ad_totals["二店"] = AdTotal(200, 78.91)
         effective_totals = {
             name: EffectiveTotal(0, 0, 0)
             for name in [*SHOP_NAMES, "淘宝", "天猫", "私域"]
@@ -47,6 +49,11 @@ class ProfitFeatureTests(unittest.TestCase):
         erp.fetch_tmall_ad_total.assert_called_once_with(profit_period)
         self.assertEqual(rows[-1].project, "总计")
         self.assertEqual(rows[-1].shipping_net_margin, 0.11)
+        self.assertEqual(rows[-1].ad_share, 0.1135)
+        self.assertEqual(
+            WeeklyReportNotionClient._profit_row_properties(rows[-1])["广告占比"],
+            {"number": 0.1135},
+        )
 
     def test_ad_view_is_sorted_with_total_first(self) -> None:
         notion = WeeklyReportNotionClient.__new__(WeeklyReportNotionClient)
@@ -196,9 +203,24 @@ class ProfitFeatureTests(unittest.TestCase):
             ),
         )
         self.assertEqual(row.roi, 3.96)
-        self.assertEqual(row.ad_share, 0.31)
+        self.assertEqual(row.ad_share, 0.3099)
         self.assertEqual(row.gross_profit_after_ads, 14463)
         self.assertEqual(row.shipping_net_margin, 0.0384)
+
+    def test_ad_share_preserves_two_percentage_decimals_and_missing_values(self) -> None:
+        for cost, sales, expected in [
+            (152669.26, 443459.91, 0.3443),
+            (366147.82, 1219468.65, 0.3003),
+            (0.01, 100, 0.0001), (0, 100, 0),
+            (None, 100, None), (100, None, None), (100, 0, None),
+        ]:
+            with self.subTest(cost=cost, sales=sales):
+                row = _profit_row(1, "一店", AdTotal(100, cost), EffectiveTotal(sales, 0, 0))
+                self.assertEqual(row.ad_share, expected)
+                self.assertEqual(
+                    WeeklyReportNotionClient._profit_row_properties(row)["广告占比"],
+                    {"number": expected},
+                )
 
     def test_private_channel_uses_shipping_net_profit(self) -> None:
         row = _profit_row(

@@ -35,10 +35,10 @@ def _rounded(value: float | None) -> float | None:
     return None if value is None else round(value, 2)
 
 
-def _ratio(numerator: float | None, denominator: float | None) -> float | None:
+def _ratio(numerator: float | None, denominator: float | None, *, digits: int = 2) -> float | None:
     if numerator is None or denominator in {None, 0}:
         return None
-    return _rounded(numerator / denominator)
+    return round(numerator / denominator, digits)
 
 
 def _period_filter(period: WeekPeriod) -> dict[str, Any]:
@@ -90,7 +90,8 @@ def _profit_row(
         ad_revenue=_rounded(ad.revenue),
         ad_cost=_rounded(ad.cost),
         roi=_ratio(ad.revenue, ad.cost),
-        ad_share=_ratio(ad.cost, effective.effective_sales),
+        # Notion 百分比用小数存储，保留四位才能显示百分比的两位小数。
+        ad_share=_ratio(ad.cost, effective.effective_sales, digits=4),
         shipping_net_profit=_rounded(effective.shipping_net_profit),
         gross_profit_after_ads=_rounded(after_ads),
         effective_sales=_rounded(effective.effective_sales),
@@ -141,7 +142,7 @@ def collect_profit_rows(notion: Any, shop_db_ids: list[str], period: WeekPeriod)
             ad_revenue=total_ad_revenue,
             ad_cost=total_ad_cost,
             roi=_ratio(total_ad_revenue, total_ad_cost),
-            ad_share=_ratio(total_ad_cost, total_effective_sales),
+            ad_share=_ratio(total_ad_cost, total_effective_sales, digits=4),
             shipping_net_profit=sum_present("shipping_net_profit"),
             gross_profit_after_ads=sum_present("gross_profit_after_ads"),
             effective_sales=total_effective_sales,
