@@ -11,6 +11,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import socket
 import subprocess
 import tempfile
 import time
@@ -26,6 +27,10 @@ _cookies: list[dict] | None = None
 
 class DesktopLoginRequired(RuntimeError):
     pass
+
+
+class _SessionRefreshRequired(DesktopLoginRequired):
+    """No website login exists, or the server explicitly requests login."""
 
 
 def client_executable() -> Path:
@@ -89,6 +94,8 @@ async def _read_browser_cookies() -> list[dict]:
         raise DesktopLoginRequired("缺少 playwright，请用当前项目的 Python 安装 requirements.txt。") from None
     try:
         async with async_playwright() as playwright:
+            if not _browser_is_running():
+                return await _read_background_cookies(playwright.chromium)
             browser = await _connect_browser(playwright.chromium)
             # Never close the user's browser/context or navigate their tabs.
             if not browser.contexts:
@@ -100,6 +107,32 @@ async def _read_browser_cookies() -> list[dict]:
         raise DesktopLoginRequired(
             f"ERP 浏览器会话读取失败（{type(exc).__name__}）；请确认 ERP Chrome 仍在运行后重试。"
         ) from None
+
+
+def _browser_is_running() -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", 9222), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+async def _read_background_cookies(chromium) -> list[dict]:
+    # Same profile as setup_erp_client.ps1; never use the user's ordinary Chrome.
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        raise DesktopLoginRequired("未找到 ERP Chrome 专用浏览器目录。")
+    profile = Path(local_app_data) / "LeedisDesktop" / "erp-chrome"
+    if not profile.is_dir():
+        raise _SessionRefreshRequired("ERP Chrome 尚未建立登录状态。" + LOGIN_HELP)
+    context = await chromium.launch_persistent_context(
+        str(profile), channel="chrome", headless=True, timeout=15000,
+    )
+    try:
+        return await _verified_cookies(context)
+    finally:
+        # Only close the headless instance created here, never an existing window.
+        await context.close()
 
 
 async def _connect_browser(chromium):
@@ -120,34 +153,51 @@ async def _connect_browser(chromium):
 async def _verified_cookies(context) -> list[dict]:
     deadline = time.monotonic() + 45
     last_state = "尚未取得网站 Cookie"
+    saw_cookies = False
     while time.monotonic() < deadline:
         try:
             cookies = [c for c in await context.cookies() if is_erp_cookie(c)]
             if cookies:
+                saw_cookies = True
                 response = await context.request.get(PROFILE_URL, timeout=10000)
                 html = await response.text()
+                if is_login_page(html, response.url):
+                    raise _SessionRefreshRequired("ERP 网页登录已过期。" + LOGIN_HELP)
                 if (response.ok and urlsplit(response.url).hostname == "ldswj.net"
                         and not is_login_page(html, response.url) and "logout()" in html):
                     return [c for c in await context.cookies() if is_erp_cookie(c)]
                 last_state = f"验证页 HTTP {response.status}，尚未确认登录"
+        except DesktopLoginRequired:
+            raise
         except Exception as exc:
             # Do not echo URLs, headers, cookie values or arbitrary server output.
             last_state = f"验证请求异常 {type(exc).__name__}"
             logging.info("ERP 网页会话检查暂时失败（%s），等待后重试", type(exc).__name__)
         await asyncio.sleep(1)
-    raise DesktopLoginRequired(
+    error_type = DesktopLoginRequired if saw_cookies else _SessionRefreshRequired
+    raise error_type(
         f"客户端已响应，但 ERP 网页会话验证失败（{last_state}）。"
         "请检查 ERP 网页能否正常打开；若显示登录页，" + LOGIN_HELP
     )
 
 
-def get_client_cookies(*, force: bool = False) -> list[dict]:
+def get_client_cookies(*, force: bool = False, allow_open: bool = True) -> list[dict]:
     global _cookies
     if force:
         _cookies = None
     if _cookies is None:
-        client_action("open")
         with ThreadPoolExecutor(max_workers=1) as executor:
+            if not force or not allow_open:
+                try:
+                    _cookies = executor.submit(lambda: asyncio.run(_read_browser_cookies())).result()
+                except _SessionRefreshRequired:
+                    if not allow_open:
+                        raise
+                    logging.info("现有 ERP 网页会话不可用，将通过客户端建立会话。")
+                else:
+                    logging.info("已复用 ERP 网页登录状态，未打开新网页。")
+                    return [dict(cookie) for cookie in _cookies]
+            client_action("open")
             _cookies = executor.submit(lambda: asyncio.run(_read_browser_cookies())).result()
     return [dict(cookie) for cookie in _cookies]
 
@@ -161,7 +211,8 @@ def main() -> int:
             client_action("login")
             print("客户端登录完成，可运行任务或点击打开系统。")
         else:
-            get_client_cookies(force=True)
+            # A diagnostic check must not create tabs or refresh client login.
+            get_client_cookies(force=True, allow_open=args.action == "open")
             print("客户端 ERP 登录状态正常。")
         return 0
     except DesktopLoginRequired as exc:
