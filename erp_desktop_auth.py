@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -88,26 +89,56 @@ async def _read_browser_cookies() -> list[dict]:
         raise DesktopLoginRequired("缺少 playwright，请用当前项目的 Python 安装 requirements.txt。") from None
     try:
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.connect_over_cdp(CDP_URL, timeout=10000)
+            browser = await _connect_browser(playwright.chromium)
             # Never close the user's browser/context or navigate their tabs.
             if not browser.contexts:
                 raise DesktopLoginRequired("ERP Chrome 尚未建立会话。")
-            context = browser.contexts[0]
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                cookies = [c for c in await context.cookies() if is_erp_cookie(c)]
-                if cookies:
-                    response = await context.request.get(PROFILE_URL, timeout=15000)
-                    html = await response.text()
-                    if (response.ok and urlsplit(response.url).hostname == "ldswj.net"
-                            and not is_login_page(html, response.url) and "logout()" in html):
-                        return [c for c in await context.cookies() if is_erp_cookie(c)]
-                await asyncio.sleep(.5)
-            raise DesktopLoginRequired("客户端已响应，但 ERP 网页会话未生效。" + LOGIN_HELP)
+            return await _verified_cookies(browser.contexts[0])
     except DesktopLoginRequired:
         raise
-    except Exception:
-        raise DesktopLoginRequired("无法读取 ERP Chrome 登录状态，请检查客户端、“打开系统”和本机 9222 端口。") from None
+    except Exception as exc:
+        raise DesktopLoginRequired(
+            f"ERP 浏览器会话读取失败（{type(exc).__name__}）；请确认 ERP Chrome 仍在运行后重试。"
+        ) from None
+
+
+async def _connect_browser(chromium):
+    # The client's success means the tab was created, not that CDP is ready.
+    for attempt in range(1, 4):
+        try:
+            return await chromium.connect_over_cdp(CDP_URL, timeout=10000)
+        except Exception as exc:
+            if attempt == 3:
+                raise DesktopLoginRequired(
+                    f"ERP Chrome 连接失败（9222 端口，{type(exc).__name__}，已尝试 3 次）；"
+                    "请检查 ERP Chrome 快捷方式及浏览器是否仍在运行。"
+                ) from None
+            logging.info("ERP Chrome 暂未就绪（%s），等待后重试连接 %s/3", type(exc).__name__, attempt + 1)
+            await asyncio.sleep(1)
+
+
+async def _verified_cookies(context) -> list[dict]:
+    deadline = time.monotonic() + 45
+    last_state = "尚未取得网站 Cookie"
+    while time.monotonic() < deadline:
+        try:
+            cookies = [c for c in await context.cookies() if is_erp_cookie(c)]
+            if cookies:
+                response = await context.request.get(PROFILE_URL, timeout=10000)
+                html = await response.text()
+                if (response.ok and urlsplit(response.url).hostname == "ldswj.net"
+                        and not is_login_page(html, response.url) and "logout()" in html):
+                    return [c for c in await context.cookies() if is_erp_cookie(c)]
+                last_state = f"验证页 HTTP {response.status}，尚未确认登录"
+        except Exception as exc:
+            # Do not echo URLs, headers, cookie values or arbitrary server output.
+            last_state = f"验证请求异常 {type(exc).__name__}"
+            logging.info("ERP 网页会话检查暂时失败（%s），等待后重试", type(exc).__name__)
+        await asyncio.sleep(1)
+    raise DesktopLoginRequired(
+        f"客户端已响应，但 ERP 网页会话验证失败（{last_state}）。"
+        "请检查 ERP 网页能否正常打开；若显示登录页，" + LOGIN_HELP
+    )
 
 
 def get_client_cookies(*, force: bool = False) -> list[dict]:
