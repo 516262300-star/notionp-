@@ -62,6 +62,7 @@ PROFIT_VIEW_PROPERTY_ORDER = [
     "毛利-广告",
     "有效销售",
     "发货毛利",
+    "发货毛利率",
     "发货净利率",
     "序号",
 ]
@@ -75,6 +76,7 @@ PROFIT_VIEW_PROPERTY_WIDTHS = {
     "毛利-广告": 130,
     "有效销售": 130,
     "发货毛利": 120,
+    "发货毛利率": 130,
     "发货净利率": 130,
     "序号": 80,
 }
@@ -300,6 +302,7 @@ class WeeklyReportNotionClient:
             PROFIT_VIEW_PROPERTY_ORDER,
             PROFIT_VIEW_PROPERTY_WIDTHS,
             hidden={"序号"},
+            required_properties={"发货毛利率", "发货净利率"},
         )
 
     def _configure_view_order(
@@ -310,6 +313,7 @@ class WeeklyReportNotionClient:
         *,
         hidden: set[str] | None = None,
         sorts: list[dict[str, str]] | None = None,
+        required_properties: set[str] | None = None,
     ) -> None:
         hidden = hidden or set()
         views = self._call(
@@ -331,7 +335,11 @@ class WeeklyReportNotionClient:
             if configuration.get("type") != "table":
                 continue
             existing_names = [prop.get("property_name") for prop in configuration.get("properties", [])]
-            ordered_names = [name for name in property_order if name in existing_names]
+            # 新增的 schema 字段可能尚未出现在视图中，显式加入以免被默认隐藏。
+            ordered_names = [
+                name for name in property_order
+                if name in existing_names or name in (required_properties or set())
+            ]
             ordered_names.extend(name for name in existing_names if name not in property_order)
             ordered = [
                 {
@@ -491,6 +499,7 @@ class WeeklyReportNotionClient:
             "毛利-广告": {"number": row.gross_profit_after_ads},
             "有效销售": {"number": row.effective_sales},
             "发货毛利": {"number": row.shipping_gross_profit},
+            "发货毛利率": {"number": row.shipping_gross_margin},
             "发货净利率": {"number": row.shipping_net_margin},
             "序号": {"number": row.seq},
         }
@@ -503,6 +512,7 @@ class WeeklyReportNotionClient:
             path=f"databases/{database_id}",
             method="PATCH",
             body={"properties": {
+                "发货毛利率": profit_database_schema()["发货毛利率"],
                 "发货净利率": profit_database_schema()["发货净利率"],
             }},
         )

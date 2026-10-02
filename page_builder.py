@@ -297,6 +297,7 @@ def profit_database_schema() -> dict[str, Any]:
         "毛利-广告": {"number": {"format": "number"}},
         "有效销售": {"number": {"format": "number"}},
         "发货毛利": {"number": {"format": "number"}},
+        "发货毛利率": {"number": {"format": "percent"}},
         "发货净利率": {"number": {"format": "percent"}},
         "序号": {"number": {"format": "number"}},
     }

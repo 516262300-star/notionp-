@@ -24,6 +24,10 @@ class ProfitRow:
     shipping_gross_profit: float | None
 
     @property
+    def shipping_gross_margin(self) -> float | None:
+        return _ratio(self.shipping_gross_profit, self.effective_sales, digits=4)
+
+    @property
     def shipping_net_margin(self) -> float | None:
         if self.shipping_net_profit is None or self.effective_sales in {None, 0}:
             return None

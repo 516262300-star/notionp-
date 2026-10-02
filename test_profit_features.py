@@ -49,6 +49,7 @@ class ProfitFeatureTests(unittest.TestCase):
         erp.fetch_tmall_ad_total.assert_called_once_with(profit_period)
         self.assertEqual(rows[-1].project, "总计")
         self.assertEqual(rows[-1].shipping_net_margin, 0.11)
+        self.assertEqual(rows[-1].shipping_gross_margin, 0.15)
         self.assertEqual(rows[-1].ad_share, 0.1135)
         self.assertEqual(
             WeeklyReportNotionClient._profit_row_properties(rows[-1])["广告占比"],
@@ -260,10 +261,47 @@ class ProfitFeatureTests(unittest.TestCase):
         schema_call, row_call = notion._call.call_args_list
         self.assertEqual(schema_call.kwargs["path"], "databases/profit-db")
         self.assertEqual(schema_call.kwargs["body"], {
-            "properties": {"发货净利率": {"number": {"format": "percent"}}},
+            "properties": {
+                "发货毛利率": {"number": {"format": "percent"}},
+                "发货净利率": {"number": {"format": "percent"}},
+            },
         })
         self.assertEqual(row_call.kwargs["page_id"], "existing-row")
         self.assertEqual(row_call.kwargs["properties"]["发货净利率"], {"number": 0.1235})
+        self.assertEqual(row_call.kwargs["properties"]["发货毛利率"], {"number": 0.2})
+
+    def test_shipping_gross_margin_handles_precision_zero_missing_and_loss(self) -> None:
+        for sales, profit, expected in [
+            (1000, 123.45, 0.1235), (0, 100, None), (None, 100, None),
+            (100, None, None), (100, 0, 0), (1000, -123.45, -0.1235),
+        ]:
+            with self.subTest(sales=sales, profit=profit):
+                row = _profit_row(1, "一店", AdTotal(0, 0), EffectiveTotal(sales, profit, 0))
+                self.assertEqual(row.shipping_gross_margin, expected)
+                self.assertEqual(
+                    WeeklyReportNotionClient._profit_row_properties(row)["发货毛利率"],
+                    {"number": expected},
+                )
+
+    def test_profit_view_shows_new_margin_columns_before_view_lists_them(self) -> None:
+        notion = WeeklyReportNotionClient.__new__(WeeklyReportNotionClient)
+        notion.view_client = Mock()
+        notion._call = Mock(side_effect=[
+            {"results": [{"id": "view-id"}]},
+            {"configuration": {"type": "table", "properties": [
+                {"property_name": "项目"}, {"property_name": "发货毛利"},
+                {"property_name": "发货净利率"}, {"property_name": "序号"},
+            ]}},
+            {},
+        ])
+        notion.configure_profit_view_order("profit-db")
+        properties = notion._call.call_args.kwargs["body"]["configuration"]["properties"]
+        self.assertEqual([p["property_id"] for p in properties], [
+            "项目", "发货毛利", "发货毛利率", "发货净利率", "序号",
+        ])
+        self.assertTrue(properties[2]["visible"])
+        self.assertTrue(properties[3]["visible"])
+        self.assertFalse(properties[4]["visible"])
 
     def test_effective_summary_parser_matches_store_aliases(self) -> None:
         headers = ["操作", "项目", "有效销售", "发货毛利", "发货净利"]
@@ -346,7 +384,7 @@ class ProfitFeatureTests(unittest.TestCase):
         if today.day > 2:
             period = period_from_dates(today.replace(day=1), today - timedelta(days=2))
         else:
-            previous_month_end = today - timedelta(days=1)
+            previous_month_end = today.replace(day=1) - timedelta(days=1)
             period = period_from_dates(previous_month_end.replace(day=2), previous_month_end)
         with self.assertRaises(ErpParseError):
             ErpClient._business_summary_month(period)
@@ -461,6 +499,7 @@ class ProfitFeatureTests(unittest.TestCase):
                 "毛利-广告",
                 "有效销售",
                 "发货毛利",
+                "发货毛利率",
                 "发货净利率",
                 "序号",
             ],
